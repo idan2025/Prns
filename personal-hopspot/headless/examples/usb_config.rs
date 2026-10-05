@@ -23,8 +23,29 @@ use personal_rns::runtime::{generate_identity_secret, RemoteControlIdentityDirec
 use personal_rns::usb_auto::AutoUsb;
 use serde_json::json;
 
-/// RAK4631 `remote-control-identity` region (personal-hopspot/memory, RAK4631 profile).
-const RAK4631_REMOTE_CONTROL_IDENTITY_ADDRESS: u32 = 0xE2000;
+/// Boards whose firmware reads a flash-time owner grant, with the address of their
+/// `remote-control-identity` region (personal-hopspot/memory nRF52840 profiles).
+#[derive(Clone, Copy, ValueEnum)]
+enum Board {
+    Rak4631,
+    WioTrackerL1,
+}
+
+impl Board {
+    const fn remote_control_identity_address(self) -> u32 {
+        match self {
+            Self::Rak4631 => 0xE2000,
+            Self::WioTrackerL1 => 0xE1000,
+        }
+    }
+
+    const fn slug(self) -> &'static str {
+        match self {
+            Self::Rak4631 => "rak4631",
+            Self::WioTrackerL1 => "wio-tracker-l1",
+        }
+    }
+}
 const UF2_MAGIC_START0: u32 = 0x0A32_4655;
 const UF2_MAGIC_START1: u32 = 0x9E5D_5157;
 const UF2_MAGIC_END: u32 = 0x0AB1_6F30;
@@ -50,7 +71,10 @@ struct Options {
 enum Command {
     /// Build a UF2 that flashes the firmware and installs this controller as the board's owner.
     Provision {
-        /// Firmware UF2 from `tools/build/hopspot-nrf52840.sh rak4631`.
+        /// Which board the UF2 is for; sets where the owner page is written.
+        #[arg(long, value_enum, default_value = "rak4631")]
+        board: Board,
+        /// Firmware UF2 from `tools/build/hopspot-nrf52840.sh BOARD`.
         #[arg(long)]
         firmware: PathBuf,
         /// Combined UF2 to write. It contains the board's private Remote Control key.
@@ -278,7 +302,7 @@ fn lock_state(state_dir: &Path) -> Result<std::fs::File, Error> {
     Ok(lock)
 }
 
-fn provision(options: &Options, firmware: &Path, out: &Path) -> Result<(), Error> {
+fn provision(options: &Options, board: Board, firmware: &Path, out: &Path) -> Result<(), Error> {
     let (secrets, _) = RemoteControlIdentityDirectory::new(options.state_dir.join("identity"))
         .load_or_generate()?
         .into_parts();
@@ -290,12 +314,12 @@ fn provision(options: &Options, firmware: &Path, out: &Path) -> Result<(), Error
         .map_err(|error| Error::Uf2(format!("vault page: {error:?}")))?;
     let merged = merge_uf2(
         &std::fs::read(firmware)?,
-        RAK4631_REMOTE_CONTROL_IDENTITY_ADDRESS,
+        board.remote_control_identity_address(),
         &page,
     )?;
     write_private(out, &merged)?;
     let record = json!({
-        "board": "rak4631",
+        "board": board.slug(),
         "target_public_key": hex::encode(target_public.as_bytes()),
     });
     write_private(
@@ -362,8 +386,13 @@ fn lora_profile(
 
 async fn control(options: Options) -> Result<(), Error> {
     let _lock = lock_state(&options.state_dir)?;
-    if let Command::Provision { firmware, out } = &options.command {
-        return provision(&options, firmware, out);
+    if let Command::Provision {
+        board,
+        firmware,
+        out,
+    } = &options.command
+    {
+        return provision(&options, *board, firmware, out);
     }
     if let Command::OwnerKey = &options.command {
         let (secrets, _) = RemoteControlIdentityDirectory::new(options.state_dir.join("identity"))
