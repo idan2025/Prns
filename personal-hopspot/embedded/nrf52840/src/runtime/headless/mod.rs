@@ -112,6 +112,8 @@ const WINDOWS_MSOS_VENDOR_CODE: u8 = 0x20;
 const INTERFACE_CAPACITY: usize = selected::INTERFACE_CAPACITY;
 const LANE_COUNT: usize = selected::LANE_COUNT;
 const LANE_DEPTH: usize = 1;
+mod node_name;
+
 const LORA_TX_QUEUE_BYTES: usize = 1024;
 const LORA_OUTBOUND_DEPTH: usize = Storage::MAX_OUTGOING_RESOURCE_REACTION_FRAMES;
 /// An announce fans out to every interface, USB included, and a Remote Control reply is often
@@ -411,14 +413,15 @@ pub async fn run(spawner: Spawner) -> ! {
 
     let transport_secret = node_identity.transport_secret();
     let destination_secret = node_identity.into_destination_secret();
-    let node_page_destination = hopspot::HopspotDestinationSet::new(
+    let destination_hashes = hopspot::HopspotDestinationSet::new(
         destination_secret.clone(),
         ANNOUNCE_APP_DATA,
         NODE_ANNOUNCE_APP_DATA,
     )
     .destination_hashes()
-    .expect("the hopspot destination names are valid")
-    .node_page;
+    .expect("the hopspot destination names are valid");
+    node_name::set_destinations(destination_hashes);
+    let node_page_destination = destination_hashes.node_page;
     let self_announcement = RemoteControlSelfAnnouncement::Destination(node_page_destination);
     #[cfg(feature = "board-rak4631")]
     let initial_controller_grants = match factory_grant {
@@ -570,6 +573,7 @@ pub async fn run(spawner: Spawner) -> ! {
     static PERSISTENCE: StaticCell<super::learned_state::BoardPersistence> = StaticCell::new();
     let persistence = PERSISTENCE.init(persistence);
     spawner.spawn(manifold_task(node, persistence).expect("manifold task fits"));
+    spawner.spawn(node_name::restore_task().expect("node name task fits"));
     let lora_seam = lora_lane.into_seam(NOTIFY.sender(), entropy);
     let usb_seam = usb_lane.into_seam(NOTIFY.sender(), entropy);
     #[cfg(any(
