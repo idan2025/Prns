@@ -1120,7 +1120,7 @@ export function rcRequestAnnounceSelf() {
 }
 
 /**
- * Grants another controller full control. `public_key` is its 64-byte public key.
+ * Grants another controller operator access. `public_key` is its 64-byte public key.
  * @param {Uint8Array} public_key
  * @returns {Uint8Array}
  */

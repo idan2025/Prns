@@ -362,7 +362,7 @@ function setupCard(open) {
       h("li", {}, "Click “Write to RAK4631” and pick that drive. The board restarts by itself."),
       h("li", {}, "Come back here and click Connect."),
     ),
-    h("label", { class: "field" }, "Name for this board", name),
+    h("label", { class: "field" }, "Board name (announced to other apps after the first connect)", name),
     h(
       "div",
       { class: "row" },
@@ -428,6 +428,7 @@ async function provision(name, state, direct) {
     board: "rak4631",
     targetPublicKey: hex(targetPublicKey),
     addedAt: new Date().toISOString(),
+    pendingName: name.trim() || undefined,
   });
   setTimeout(homeScreen, written ? 2500 : 6000);
 }
@@ -527,6 +528,16 @@ async function connectScreen(board) {
 async function dashboard(board) {
   const description = await session.call(rc.rcRequestDescribe());
   const can = new Set(description.requests ?? []);
+  // The setup wizard's name becomes the board's announced name on the first connect.
+  if (board.pendingName && can.has("SetNodeName")) {
+    try {
+      expectApplied(await session.call(rc.rcRequestSetNodeName(board.pendingName)), "Name");
+      board = { ...board, pendingName: undefined };
+      boards.add(board);
+    } catch (error) {
+      toast(error.message ?? String(error), "bad");
+    }
+  }
   const view = { board, can, openPeers: new Set(), editing: new Set() };
   await drawDashboard(view);
   refreshTimer = setInterval(() => {
@@ -1061,7 +1072,7 @@ async function controllersCard(view) {
                 await drawDashboard(view);
               }),
           },
-          "Grant full access",
+          "Grant access",
         )),
       ),
   );
