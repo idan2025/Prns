@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Set up and control a screenless Personal Hopspot from your browser over USB."
+    />
+    <title>Hopspot Configure</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="brand">Hopspot Configure</span>
+      <span id="runtime" class="pill" data-state="working">Starting…</span>
+    </header>
+    <main id="app" aria-live="polite">
+      <p class="muted">Loading…</p>
+    </main>
+    <footer class="foot">
+      Prototype · runs entirely in this browser · needs Chrome or Edge (WebUSB)
+    </footer>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

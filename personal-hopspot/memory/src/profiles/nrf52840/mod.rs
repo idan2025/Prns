@@ -344,12 +344,40 @@ const MESH_TOWER_V2_REGIONS: [MemoryRegion; 8] = [
 const MESH_TOWER_JOURNALS: [JournalLayout; 1] =
     [journal(0xE3000, 0xE4000, 0xE5000, 0xE7000, 0xE9000)];
 
-const RAK4631_REGIONS: [MemoryRegion; 9] = [
+// The RAK4631 is configured over USB Remote Control, so its LoRa profile needs the two-page A/B
+// store the display boards use. Those pages come from the top of the firmware region; identities and
+// the journal keep their addresses, and the former single radio page stays reserved.
+const RAK4631_REGIONS: [MemoryRegion; 10] = [
     MESH_TOWER_V2_REGIONS[0],
-    MESH_TOWER_V2_REGIONS[1],
+    region(
+        "firmware",
+        FLASH,
+        0x26000,
+        0xE0000,
+        RegionOwner::FirmwareImage,
+        RegionRetention::ReplaceWithFirmware,
+        RegionRole::FirmwareImage,
+    ),
+    region(
+        "radio-profile",
+        FLASH,
+        0xE0000,
+        0xE2000,
+        RegionOwner::Radio,
+        RegionRetention::PreserveAcrossFirmwareUpdate,
+        RegionRole::RadioProfile,
+    ),
     MESH_TOWER_V2_REGIONS[2],
     MESH_TOWER_V2_REGIONS[3],
-    MESH_TOWER_V2_REGIONS[4],
+    region(
+        "application-data-reserved",
+        FLASH,
+        0xE9000,
+        0xEA000,
+        RegionOwner::Platform,
+        RegionRetention::PreserveAcrossFirmwareUpdate,
+        RegionRole::Reserved,
+    ),
     MESH_TOWER_V2_REGIONS[5],
     MESH_TOWER_V2_REGIONS[6],
     region(
@@ -582,7 +610,7 @@ pub const RAK4631: MemoryProfile = MemoryProfile {
     architecture: ProcessorArchitecture::ThumbV7em,
     address_spaces: &NRF52840_S140_RAM_SPACES,
     regions: &RAK4631_REGIONS,
-    firmware: firmware_placement(0x26000, 0xE2000, 0xE2000),
+    firmware: firmware_placement(0x26000, 0xE0000, 0xE0000),
     journals: &MESH_TOWER_JOURNALS,
     runtime_reservations: &NRF_RUNTIME_RESERVATIONS,
 };
