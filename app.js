@@ -545,7 +545,8 @@ async function disconnect() {
 
 async function drawDashboard(view) {
   const { board, can } = view;
-  const [build, power, interfaces] = await Promise.all([
+  const [nodeName, build, power, interfaces] = await Promise.all([
+    can.has("DescribeNodeName") ? session.call(rc.rcRequestDescribeNodeName()) : null,
     can.has("DescribeBuild") ? session.call(rc.rcRequestDescribeBuild()) : null,
     can.has("DescribePower") ? session.call(rc.rcRequestDescribePower()) : null,
     can.has("InventoryInterfaces") ? session.interfaces() : [],
@@ -557,9 +558,10 @@ async function drawDashboard(view) {
       h(
         "div",
         { class: "row spread" },
-        h("h2", {}, board.name),
+        h("h2", {}, nodeName?.name ?? board.name),
         h("button", { onclick: () => disconnect() }, "Disconnect"),
       ),
+      can.has("SetNodeName") && nameEditor(view, nodeName?.name ?? board.name),
       h(
         "div",
         { class: "stats" },
@@ -582,6 +584,37 @@ async function drawDashboard(view) {
   if (extras) cards.push(extras);
   if (can.has("InventoryControllers")) cards.push(await controllersCard(view));
   if (session) render(...cards);
+}
+
+function nameEditor(view, current) {
+  const input = h("input", { value: current, maxlength: "32", "aria-label": "Board name" });
+  return editingDetails(
+    view,
+    "name",
+    "Rename this board",
+    h("p", { class: "muted small" }, "Other Reticulum apps and nodes show this name. Up to 32 characters."),
+    h(
+      "div",
+      { class: "row" },
+      input,
+      h(
+        "button",
+        {
+          class: "primary",
+          onclick: (e) =>
+            busy(e.currentTarget, async () => {
+              const name = input.value.trim();
+              expectApplied(await session.call(rc.rcRequestSetNodeName(name)), "Name");
+              boards.add({ ...view.board, name });
+              view.board = { ...view.board, name };
+              view.editing.delete("name");
+              await drawDashboard(view);
+            }),
+        },
+        "Save name",
+      ),
+    ),
+  );
 }
 
 function systemControls(can) {

@@ -1165,6 +1165,19 @@ export function rcRequestDescribeBuild() {
 /**
  * @returns {Uint8Array}
  */
+export function rcRequestDescribeNodeName() {
+    const ret = wasm.rcRequestDescribeNodeName();
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+}
+
+/**
+ * @returns {Uint8Array}
+ */
 export function rcRequestDescribePower() {
     const ret = wasm.rcRequestDescribePower();
     if (ret[3]) {
@@ -1415,6 +1428,23 @@ export function rcRequestSetInterfacePower(id, on) {
     const ptr0 = passArray8ToWasm0(id, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.rcRequestSetInterfacePower(ptr0, len0, on);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+
+/**
+ * Rename the node. Names are 1..=32 bytes of UTF-8 without surrounding spaces.
+ * @param {string} name
+ * @returns {Uint8Array}
+ */
+export function rcRequestSetNodeName(name) {
+    const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.rcRequestSetNodeName(ptr0, len0);
     if (ret[3]) {
         throw takeFromExternrefTable0(ret[2]);
     }
