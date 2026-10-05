@@ -93,7 +93,7 @@ impl RemoteControlIdentityFlash {
 
     /// The owner grant a provisioning UF2 wrote beside the target identity, if any. A screenless
     /// board has no pairing surface, so this is how its first Administrator is installed.
-    #[cfg(feature = "board-rak4631")]
+    #[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
     pub(crate) fn factory_grant(
         &self,
         nvmc: &mut Nvmc<'_>,

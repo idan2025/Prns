@@ -21,7 +21,7 @@ use personal_rns::interfaces::{ConnectionState, InterfaceId};
 use personal_rns::lora::{LoRaControl, LoRaInterface, LoRaInterfaceInput, LoRaSpectrumStatus};
 use personal_rns::manifold::embassy::{EmbassyHost, EmbassyInterfaceStatus, InterfaceLifecycle};
 use personal_rns::manifold::interface_seam::{Interface, EMBEDDED_MAX_WIRE_FRAME_LEN};
-#[cfg(feature = "board-rak4631")]
+#[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
 use personal_rns::remote_control::{RemoteControlControllerGrant, RemoteControlControllerGrants};
 use personal_rns::remote_control::{
     RemoteControlInitialControllerGrants, RemoteControlSelfAnnouncement, RemoteControlService,
@@ -243,7 +243,7 @@ pub async fn run(spawner: Spawner) -> ! {
             (node_bootstrap, remote_control_bootstrap, entropy)
         })
         .await;
-    #[cfg(feature = "board-rak4631")]
+    #[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
     let mut factory_grant = None;
     #[cfg(any(
         feature = "board-t096",
@@ -260,7 +260,7 @@ pub async fn run(spawner: Spawner) -> ! {
             let remote_control_bootstrap = board::REMOTE_CONTROL_IDENTITY_FLASH
                 .load_or_generate(nvmc, &mut entropy)
                 .expect("RemoteControl identity bootstrap failed");
-            #[cfg(feature = "board-rak4631")]
+            #[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
             {
                 factory_grant = board::REMOTE_CONTROL_IDENTITY_FLASH.factory_grant(nvmc);
             }
@@ -423,7 +423,7 @@ pub async fn run(spawner: Spawner) -> ! {
     node_name::set_destinations(destination_hashes);
     let node_page_destination = destination_hashes.node_page;
     let self_announcement = RemoteControlSelfAnnouncement::Destination(node_page_destination);
-    #[cfg(feature = "board-rak4631")]
+    #[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
     let initial_controller_grants = match factory_grant {
         Some(grant) => {
             static FACTORY_GRANTS: StaticCell<[RemoteControlControllerGrant; 1]> =
@@ -436,7 +436,7 @@ pub async fn run(spawner: Spawner) -> ! {
         }
         None => RemoteControlInitialControllerGrants::Nobody,
     };
-    #[cfg(not(feature = "board-rak4631"))]
+    #[cfg(not(any(feature = "board-rak4631", feature = "board-wio-tracker-l1")))]
     let initial_controller_grants = RemoteControlInitialControllerGrants::Nobody;
     let remote_control = RemoteControlService::with_capabilities(
         remote_control_identity_secrets,

@@ -130,6 +130,19 @@ pub fn rc_request_describe_build() -> Result<Vec<u8>, JsValue> {
     encode(RemoteControlRequest::DescribeBuild)
 }
 
+#[wasm_bindgen(js_name = rcRequestDescribeNodeName)]
+pub fn rc_request_describe_node_name() -> Result<Vec<u8>, JsValue> {
+    encode(RemoteControlRequest::DescribeNodeName)
+}
+
+/// Rename the node. Names are 1..=32 bytes of UTF-8 without surrounding spaces.
+#[wasm_bindgen(js_name = rcRequestSetNodeName)]
+pub fn rc_request_set_node_name(name: &str) -> Result<Vec<u8>, JsValue> {
+    let name = personal_rns::remote_control::RemoteControlNodeName::new(name)
+        .ok_or_else(|| error("a name is 1 to 32 bytes, without leading or trailing spaces"))?;
+    encode(RemoteControlRequest::SetNodeName { name })
+}
+
 #[wasm_bindgen(js_name = rcRequestDescribePower)]
 pub fn rc_request_describe_power() -> Result<Vec<u8>, JsValue> {
     encode(RemoteControlRequest::DescribePower)
@@ -550,6 +563,13 @@ pub fn rc_decode_response(bytes: &[u8]) -> Result<JsValue, JsValue> {
             outcome("SetDisplayVisibility", value)
         }
         RemoteControlResponse::SetDisplayAutoOff(value) => outcome("SetDisplayAutoOff", value),
+        RemoteControlResponse::SetNodeName(value) => outcome("SetNodeName", value),
+        RemoteControlResponse::DescribeNodeName(name) => {
+            let object = Object::new();
+            set(&object, "kind", "DescribeNodeName");
+            set(&object, "name", name.as_str());
+            object
+        }
         RemoteControlResponse::ProtocolError(value) => outcome("ProtocolError", value),
         other => {
             let object = Object::new();

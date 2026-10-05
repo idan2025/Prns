@@ -100,6 +100,12 @@ enum Command {
     },
     /// Print the board's public key, which other controllers need to address it.
     BoardKey,
+    /// Show the board's announced name, or rename it with `--set`.
+    Name {
+        /// New name: 1 to 32 bytes, without leading or trailing spaces.
+        #[arg(long)]
+        set: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -365,6 +371,14 @@ async fn control(options: Options) -> Result<(), Error> {
         );
         return Ok(());
     }
+    let new_name = match &options.command {
+        Command::Name { set: Some(name) } => Some(
+            personal_rns::remote_control::RemoteControlNodeName::new(name).ok_or_else(|| {
+                Error::Record("a name is 1 to 32 bytes, without leading or trailing spaces".into())
+            })?,
+        ),
+        _ => None,
+    };
     let authorize = match &options.command {
         Command::Authorize { public_key } => Some(
             hex::decode(public_key.trim())
@@ -552,6 +566,24 @@ async fn control(options: Options) -> Result<(), Error> {
                 );
             }
             Command::BoardKey => {}
+            Command::Name { .. } => {
+                if let Some(name) = new_name {
+                    let (outcome, _) = connection
+                        .set_node_name(name)
+                        .await
+                        .map_err(Error::Operation)?;
+                    println!(
+                        "{}",
+                        json!({"event":"set_name","name":name.as_str(),"outcome":format!("{outcome:?}")})
+                    );
+                } else {
+                    let (name, _) = connection
+                        .describe_node_name()
+                        .await
+                        .map_err(Error::Operation)?;
+                    println!("{}", json!({"event":"name","name":name.as_str()}));
+                }
+            }
         }
         connection.close();
         Ok(())
