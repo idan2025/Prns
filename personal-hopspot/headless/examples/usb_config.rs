@@ -92,6 +92,14 @@ enum Command {
     },
     /// Announce the node's page on every interface.
     Announce,
+    /// Give another controller (for example the Hopspot Configure page) full control.
+    Authorize {
+        /// The controller's 64-byte public key as 128 hex digits.
+        #[arg(long)]
+        public_key: String,
+    },
+    /// Print the board's public key, which other controllers need to address it.
+    BoardKey,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -349,6 +357,25 @@ async fn control(options: Options) -> Result<(), Error> {
     if let Command::Provision { firmware, out } = &options.command {
         return provision(&options, firmware, out);
     }
+    if let Command::BoardKey = &options.command {
+        let key = load_target(&options)?;
+        println!(
+            "{}",
+            json!({"event":"board_key","device":options.device,"public_key":hex::encode(key.as_bytes())})
+        );
+        return Ok(());
+    }
+    let authorize = match &options.command {
+        Command::Authorize { public_key } => Some(
+            hex::decode(public_key.trim())
+                .ok()
+                .and_then(|bytes| {
+                    personal_rns::remote_control::parse_controller_public_keys(&bytes)
+                })
+                .ok_or_else(|| Error::Record("--public-key must be 128 hex digits".into()))?,
+        ),
+        _ => None,
+    };
     // Validate local arguments before touching USB.
     let lora = match &options.command {
         Command::Lora {
@@ -513,6 +540,18 @@ async fn control(options: Options) -> Result<(), Error> {
                 connection.announce_self().await.map_err(Error::Operation)?;
                 println!("{}", json!({"event":"announced"}));
             }
+            Command::Authorize { .. } => {
+                let controller = authorize.clone().ok_or(Error::Profile)?;
+                let (outcome, _) = connection
+                    .authorize_controller(controller, RemoteControlRequestSet::all())
+                    .await
+                    .map_err(Error::Operation)?;
+                println!(
+                    "{}",
+                    json!({"event":"authorize","outcome":format!("{outcome:?}")})
+                );
+            }
+            Command::BoardKey => {}
         }
         connection.close();
         Ok(())

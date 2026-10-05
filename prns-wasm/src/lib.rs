@@ -11,6 +11,7 @@ mod outbound_batch;
 mod packed_snapshot;
 mod parameters;
 mod portable_crypto;
+mod remote_control;
 mod runtime;
 mod usb_auto;
 mod websocket;
