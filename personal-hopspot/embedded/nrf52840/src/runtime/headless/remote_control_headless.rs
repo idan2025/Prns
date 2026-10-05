@@ -44,6 +44,8 @@ use crate::boards::selected as board;
 ))]
 use super::bluetooth::{BLE_SHARED, BLE_SUPERVISOR_ID, MEMBERS};
 use super::{INTERFACE_STORE, REMOTE_CONTROL_COMMANDS};
+#[cfg(feature = "board-rak4631")]
+use crate::boards::selected as board;
 
 const RESPONSE_GRACE_PERIOD: Duration = Duration::from_millis(250);
 const LORA_ENABLED: u8 = 1 << 0;
@@ -62,6 +64,26 @@ const BLUETOOTH_ENABLED: u8 = 1 << 2;
 const SNAPSHOT_CAPACITY: usize = MEMBERS + 3;
 #[cfg(feature = "board-t1000e")]
 const SNAPSHOT_CAPACITY: usize = 2;
+
+/// The RAK4631 keeps its LoRa profile in the A/B radio-profile pages; the other headless boards
+/// start Unconfigured on every boot, so they carry no store.
+#[cfg(feature = "board-rak4631")]
+pub(super) type SubGStore =
+    hopspot::SubGConfigurationStore<super::super::learned_state::BoardFlash>;
+#[cfg(not(feature = "board-rak4631"))]
+pub(super) type SubGStore = ();
+
+#[cfg(feature = "board-rak4631")]
+pub(super) async fn load_subg_configuration(
+    shared_flash: super::super::learned_state::BoardFlash,
+) -> (SubGStore, SubGConfigurationState) {
+    let mut store = hopspot::SubGConfigurationStore::new(shared_flash, board::RADIO_PROFILE_PAGES);
+    let state = match store.load().await {
+        Ok(loaded) => loaded.state,
+        Err(_) => SubGConfigurationState::Unconfigured,
+    };
+    (store, state)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScheduledAction {
@@ -90,6 +112,8 @@ struct Context<'a> {
     scheduled_effect: &'a mut Option<ScheduledEffect>,
     lora_controller: &'a mut personal_rns::lora::LoRaController<'static>,
     subg_configuration: &'a mut SubGConfigurationState,
+    #[cfg_attr(not(feature = "board-rak4631"), allow(dead_code))]
+    subg_store: &'a mut SubGStore,
     #[cfg(feature = "board-t1000e")]
     gnss_wanted: &'a mut bool,
 }
@@ -134,6 +158,7 @@ pub(super) async fn run_headless(
     lora_status: &'static EmbassyInterfaceStatus,
     usb_status: &'static EmbassyInterfaceStatus,
     mut lora_controller: personal_rns::lora::LoRaController<'static>,
+    mut subg_store: SubGStore,
     mut subg_configuration: SubGConfigurationState,
 ) -> ! {
     let mut system_awake = true;
@@ -180,6 +205,7 @@ pub(super) async fn run_headless(
                         scheduled_effect: &mut scheduled_effect,
                         lora_controller: &mut lora_controller,
                         subg_configuration: &mut subg_configuration,
+                        subg_store: &mut subg_store,
                         #[cfg(feature = "board-t1000e")]
                         gnss_wanted: &mut gnss_wanted,
                     },
@@ -349,12 +375,17 @@ async fn execute(
             let requested =
                 SubGConfigurationState::Configured(SubGConfiguration::manual_lora(profile));
             if *context.subg_configuration != requested {
+                let previous = *context.subg_configuration;
                 if context.lora_controller.apply_configuration(requested).await
                     == personal_rns::lora::LoRaApplyOutcome::Rejected
                 {
                     return Err(RemoteControlHostCommandError::ApplyFailed);
                 }
                 *context.subg_configuration = requested;
+                #[cfg(feature = "board-rak4631")]
+                persist_subg_configuration(&mut context, previous).await?;
+                #[cfg(not(feature = "board-rak4631"))]
+                let _ = previous;
             }
             Ok(RemoteControlHostResponse::SetInterfaceLoRaProfile(
                 RemoteControlLoRaOutcome::Applied,
@@ -758,4 +789,32 @@ fn snapshots(
             .map_err(|_| RemoteControlHostCommandError::ApplyFailed)?;
     }
     Ok(snapshots)
+}
+
+/// Commit the just-applied profile; if flash cannot confirm the write, put the radio back on the
+/// previous profile so the running state never diverges from what the next boot will load.
+#[cfg(feature = "board-rak4631")]
+async fn persist_subg_configuration(
+    context: &mut Context<'_>,
+    previous: SubGConfigurationState,
+) -> Result<(), RemoteControlHostCommandError> {
+    let committed = match *context.subg_configuration {
+        SubGConfigurationState::Configured(configuration) => {
+            context.subg_store.save(configuration).await
+        }
+        SubGConfigurationState::Unconfigured => context.subg_store.clear().await,
+    };
+    if matches!(
+        committed,
+        hopspot::SubGConfigurationCommitOutcome::Committed
+    ) {
+        return Ok(());
+    }
+    if context.lora_controller.apply_configuration(previous).await
+        != personal_rns::lora::LoRaApplyOutcome::Applied
+    {
+        return Err(RemoteControlHostCommandError::RollbackFailed);
+    }
+    *context.subg_configuration = previous;
+    Err(RemoteControlHostCommandError::ApplyFailed)
 }

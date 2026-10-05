@@ -22,7 +22,8 @@ impl NrfFirmwareMemory {
         feature = "board-t-echo",
         feature = "board-t096",
         feature = "board-t114",
-        feature = "board-mesh-pocket"
+        feature = "board-mesh-pocket",
+        feature = "board-rak4631"
     ))]
     pub(crate) const fn two_flash_pages(&self, role: RegionRole) -> [u32; 2] {
         let region = self.region(role);

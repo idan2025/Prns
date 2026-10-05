@@ -128,6 +128,45 @@ browser qualification evidence. A successful local flash does not qualify a
 signed release. Qualification receipts and their remaining limits live under
 [`validation/qualifications/`](../validation/qualifications/).
 
+## Configuring a screenless RAK4631 over USB
+
+The RAK4631 has no display, so it is configured from a computer over USB with
+Remote Control. The `usb_config` example provisions the board's owner and then
+sends typed commands to it; the LoRa profile it sets is saved on the board and
+survives reboots.
+
+Allow your user to open the board's WebUSB interface once (Linux):
+
+    tools/device/install-prns-webusb-udev.sh
+
+Build the firmware and the tool, then make a UF2 that also installs this
+computer's controller as the board's owner:
+
+    tools/build/hopspot-nrf52840.sh rak4631
+    cargo build --manifest-path personal-hopspot/headless/Cargo.toml \
+        --example usb_config --features usb-config
+    usb_config provision --firmware target/hopspot-rak4631/rak4631.uf2 \
+        --out rak4631-owned.uf2
+
+Double-press reset to open the bootloader drive, copy `rak4631-owned.uf2` to it,
+and delete the UF2 afterwards: it carries the board's private Remote Control
+key. The controller identity and the board's public key are kept under
+`~/.config/prns-usb-config` (`--state-dir` overrides it, `--device` names a
+board when you own several); losing that directory means re-provisioning.
+
+With the board plugged in:
+
+    usb_config status
+    usb_config lora --region US915 --frequency-hz 918300000 --bandwidth-khz 250 \
+        --spreading-factor 10 --coding-rate 5 --tx-power-dbm 22
+    usb_config interface INTERFACE_ID off
+    usb_config system asleep
+    usb_config announce
+
+Use the example executable from the build output in place of `usb_config`.
+Every command prints JSON lines. Flashing the plain `rak4631.uf2` keeps the
+existing owner; re-running `provision` replaces it.
+
 ## Embedded flash-layout upgrade
 
 The [runtime entropy guide](../docs/runtime-entropy.md) documents board bring-up,

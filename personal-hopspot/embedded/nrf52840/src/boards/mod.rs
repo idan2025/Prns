@@ -82,6 +82,19 @@ impl RemoteControlIdentityFlash {
         }
         bootstrap
     }
+
+    /// The owner grant a provisioning UF2 wrote beside the target identity, if any. A screenless
+    /// board has no pairing surface, so this is how its first Administrator is installed.
+    #[cfg(feature = "board-rak4631")]
+    pub(crate) fn factory_grant(
+        &self,
+        nvmc: &mut Nvmc<'_>,
+    ) -> Option<personal_rns::remote_control::RemoteControlControllerGrant> {
+        let vault = FlashVault::<_, REMOTE_CONTROL_IDENTITY_VAULT_SLOTS>::new(nvmc, self.offset);
+        personal_rns::remote_control::load_factory_controller_grant(&vault)
+            .ok()
+            .flatten()
+    }
 }
 
 #[cfg(feature = "board-mesh-pocket")]

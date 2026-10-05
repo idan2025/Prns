@@ -9,13 +9,19 @@ use static_cell::{ConstStaticCell, StaticCell};
 use personal_hopspot_core as hopspot;
 use personal_rns::engine::IssuedCommand;
 use personal_rns::interfaces::lora::{AirtimePolicy, LORA_MAX_PAYLOAD};
-#[cfg(not(any(feature = "board-t096", feature = "board-t114")))]
+#[cfg(not(any(
+    feature = "board-t096",
+    feature = "board-t114",
+    feature = "board-rak4631"
+)))]
 use personal_rns::interfaces::subghz::SubGConfigurationState;
 use personal_rns::interfaces::usb_auto::{WEBUSB_PRODUCT_ID, WEBUSB_VENDOR_ID};
 use personal_rns::interfaces::{ConnectionState, InterfaceId};
 use personal_rns::lora::{LoRaControl, LoRaInterface, LoRaInterfaceInput, LoRaSpectrumStatus};
 use personal_rns::manifold::embassy::{EmbassyHost, EmbassyInterfaceStatus, InterfaceLifecycle};
 use personal_rns::manifold::interface_seam::{Interface, EMBEDDED_MAX_WIRE_FRAME_LEN};
+#[cfg(feature = "board-rak4631")]
+use personal_rns::remote_control::{RemoteControlControllerGrant, RemoteControlControllerGrants};
 use personal_rns::remote_control::{
     RemoteControlInitialControllerGrants, RemoteControlSelfAnnouncement, RemoteControlService,
 };
@@ -220,6 +226,8 @@ pub async fn run(spawner: Spawner) -> ! {
             (node_bootstrap, remote_control_bootstrap, entropy)
         })
         .await;
+    #[cfg(feature = "board-rak4631")]
+    let mut factory_grant = None;
     #[cfg(any(
         feature = "board-t096",
         feature = "board-t114",
@@ -234,6 +242,10 @@ pub async fn run(spawner: Spawner) -> ! {
             let remote_control_bootstrap = board::REMOTE_CONTROL_IDENTITY_FLASH
                 .load_or_generate(nvmc, &mut entropy)
                 .expect("RemoteControl identity bootstrap failed");
+            #[cfg(feature = "board-rak4631")]
+            {
+                factory_grant = board::REMOTE_CONTROL_IDENTITY_FLASH.factory_grant(nvmc);
+            }
             let ble_bootstrap = board::bootstrap_ble_identity(nvmc, &mut entropy);
             (
                 node_bootstrap,
@@ -383,9 +395,24 @@ pub async fn run(spawner: Spawner) -> ! {
     .expect("the hopspot destination names are valid")
     .node_page;
     let self_announcement = RemoteControlSelfAnnouncement::Destination(node_page_destination);
+    #[cfg(feature = "board-rak4631")]
+    let initial_controller_grants = match factory_grant {
+        Some(grant) => {
+            static FACTORY_GRANTS: StaticCell<[RemoteControlControllerGrant; 1]> =
+                StaticCell::new();
+            let grants: &'static [RemoteControlControllerGrant] = FACTORY_GRANTS.init([grant]);
+            RemoteControlInitialControllerGrants::Grants(
+                RemoteControlControllerGrants::try_from(grants)
+                    .expect("one factory grant is a valid grant set"),
+            )
+        }
+        None => RemoteControlInitialControllerGrants::Nobody,
+    };
+    #[cfg(not(feature = "board-rak4631"))]
+    let initial_controller_grants = RemoteControlInitialControllerGrants::Nobody;
     let remote_control = RemoteControlService::with_capabilities(
         remote_control_identity_secrets,
-        RemoteControlInitialControllerGrants::Nobody,
+        initial_controller_grants,
         self_announcement,
         remote_control::capabilities(),
     );
@@ -394,8 +421,21 @@ pub async fn run(spawner: Spawner) -> ! {
     let loaded_subg_configuration = selected::load_subg_configuration(shared_flash).await;
     #[cfg(any(feature = "board-t096", feature = "board-t114"))]
     let subg_configuration = loaded_subg_configuration.state;
-    #[cfg(not(any(feature = "board-t096", feature = "board-t114")))]
+    #[cfg(feature = "board-rak4631")]
+    let (subg_configuration_store, subg_configuration) =
+        remote_control::load_subg_configuration(shared_flash).await;
+    #[cfg(not(any(
+        feature = "board-t096",
+        feature = "board-t114",
+        feature = "board-rak4631"
+    )))]
     let subg_configuration = SubGConfigurationState::Unconfigured;
+    #[cfg(any(
+        feature = "board-t1000e",
+        feature = "board-mesh-tower-v2",
+        feature = "board-muzi-base-duo"
+    ))]
+    let subg_configuration_store = ();
     static LORA_STATUS: StaticCell<EmbassyInterfaceStatus> = StaticCell::new();
     let lora_status: &'static EmbassyInterfaceStatus =
         LORA_STATUS.init(EmbassyInterfaceStatus::new_accounted(
@@ -576,7 +616,13 @@ pub async fn run(spawner: Spawner) -> ! {
     selected::run(
         io,
         lora.run(lora_seam),
-        remote_control::run_headless(lora_status, usb_status, lora_controller, subg_configuration),
+        remote_control::run_headless(
+            lora_status,
+            usb_status,
+            lora_controller,
+            subg_configuration_store,
+            subg_configuration,
+        ),
         gnss,
     )
     .await;
@@ -589,7 +635,13 @@ pub async fn run(spawner: Spawner) -> ! {
         io,
         lora.run(lora_seam),
         bluetooth::run(sd, bluetooth),
-        remote_control::run_headless(lora_status, usb_status, lora_controller, subg_configuration),
+        remote_control::run_headless(
+            lora_status,
+            usb_status,
+            lora_controller,
+            subg_configuration_store,
+            subg_configuration,
+        ),
         button,
         node_page_destination,
     )
