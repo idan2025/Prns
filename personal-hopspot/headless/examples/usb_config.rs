@@ -100,6 +100,8 @@ enum Command {
     },
     /// Print the board's public key, which other controllers need to address it.
     BoardKey,
+    /// Print this controller's public key, to authorize it on a board owned elsewhere.
+    OwnerKey,
     /// Show the board's announced name, or rename it with `--set`.
     Name {
         /// New name: 1 to 32 bytes, without leading or trailing spaces.
@@ -363,6 +365,20 @@ async fn control(options: Options) -> Result<(), Error> {
     if let Command::Provision { firmware, out } = &options.command {
         return provision(&options, firmware, out);
     }
+    if let Command::OwnerKey = &options.command {
+        let (secrets, _) = RemoteControlIdentityDirectory::new(options.state_dir.join("identity"))
+            .load_or_generate()?
+            .into_parts();
+        let identities = secrets.identities();
+        println!(
+            "{}",
+            json!({
+                "event":"owner_key",
+                "public_key":hex::encode(identities.controller().public_keys().public_key_bytes()),
+            })
+        );
+        return Ok(());
+    }
     if let Command::BoardKey = &options.command {
         let key = load_target(&options)?;
         println!(
@@ -557,7 +573,7 @@ async fn control(options: Options) -> Result<(), Error> {
             Command::Authorize { .. } => {
                 let controller = authorize.clone().ok_or(Error::Profile)?;
                 let (outcome, _) = connection
-                    .authorize_controller(controller, RemoteControlRequestSet::all())
+                    .authorize_controller(controller, RemoteControlRequestSet::all_operator())
                     .await
                     .map_err(Error::Operation)?;
                 println!(
@@ -565,7 +581,7 @@ async fn control(options: Options) -> Result<(), Error> {
                     json!({"event":"authorize","outcome":format!("{outcome:?}")})
                 );
             }
-            Command::BoardKey => {}
+            Command::BoardKey | Command::OwnerKey => {}
             Command::Name { .. } => {
                 if let Some(name) = new_name {
                     let (outcome, _) = connection

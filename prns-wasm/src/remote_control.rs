@@ -336,7 +336,7 @@ pub fn rc_request_inventory_controllers(after: &[u8]) -> Result<Vec<u8>, JsValue
     encode(RemoteControlRequest::InventoryControllers { page })
 }
 
-/// Grants another controller full control. `public_key` is its 64-byte public key.
+/// Grants another controller operator access. `public_key` is its 64-byte public key.
 #[wasm_bindgen(js_name = rcRequestAuthorizeController)]
 pub fn rc_request_authorize_controller(public_key: &[u8]) -> Result<Vec<u8>, JsValue> {
     let controller = parse_controller_public_keys(public_key).ok_or_else(|| {
@@ -346,7 +346,9 @@ pub fn rc_request_authorize_controller(public_key: &[u8]) -> Result<Vec<u8>, JsV
     })?;
     encode(RemoteControlRequest::AuthorizeController {
         controller,
-        permitted_requests: RemoteControlRequestSet::all(),
+        // A controller may only delegate operator access; managing controllers stays with
+        // administrators (the board's factory owner).
+        permitted_requests: RemoteControlRequestSet::all_operator(),
     })
 }
 
