@@ -29,7 +29,7 @@ type XiaoSpiDevice = ExclusiveDevice<Spim<'static>, Output<'static>, Delay>;
 
 type XiaoRadio = Sx126x<XiaoSpiDevice, Input<'static>, Input<'static>, Output<'static>, Delay>;
 
-pub(crate) type XiaoLoraInterface = LoRaInterface<'static, XiaoRadio>;
+pub(crate) type XiaoLoraInterface = LoRaInterface<'static, 'static, XiaoRadio>;
 
 type XiaoUsbDriver = Driver<'static, &'static SoftwareVbusDetect>;
 

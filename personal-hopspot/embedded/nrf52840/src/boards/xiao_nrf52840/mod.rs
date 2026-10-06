@@ -32,8 +32,15 @@ pub(crate) const USB_MANUFACTURER: &str = "Stay Personal";
 pub(crate) const USB_PRODUCT: &str = "Personal Hopspot (Seeed XIAO nRF52840)";
 pub(crate) const USB_SERIAL_NUMBER: &str = "PERSONAL-RNS-XIAO-NRF52840-HOP";
 pub(crate) const USB_INTERFACE_ID: InterfaceId = InterfaceId::new(*b"xiao-nrf");
+// msgpack: fixarray(2), str8 of NODE_ANNOUNCE_APP_DATA.len(), then nil.
 pub(crate) const ANNOUNCE_APP_DATA: &[u8] = b"\x92\xc4\x15Personal Hopspot XIAO\xc0";
 pub(crate) const NODE_ANNOUNCE_APP_DATA: &[u8] = b"Personal Hopspot XIAO";
+
+const _: () = {
+    // The str8 length byte must agree with the name, or peers decode a truncated announce.
+    assert!(NODE_ANNOUNCE_APP_DATA.len() == 0x15);
+    assert!(ANNOUNCE_APP_DATA.len() == NODE_ANNOUNCE_APP_DATA.len() + 4);
+};
 
 const BUTTON_DEBOUNCE: Duration = Duration::from_millis(25);
 

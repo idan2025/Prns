@@ -266,7 +266,7 @@ const T096_REGIONS: [MemoryRegion; 10] = [
 const HELTEC_DISPLAY_JOURNALS: [JournalLayout; 1] =
     [journal(0xE2000, 0xE3000, 0xE4000, 0xE6000, 0xE8000)];
 
-const MESH_TOWER_V2_REGIONS: [MemoryRegion; 8] = [
+const MESH_TOWER_V2_REGIONS: [MemoryRegion; 9] = [
     region(
         "platform-firmware",
         FLASH,
@@ -280,7 +280,7 @@ const MESH_TOWER_V2_REGIONS: [MemoryRegion; 8] = [
         "firmware",
         FLASH,
         0x26000,
-        0xE2000,
+        0xE0000,
         RegionOwner::FirmwareImage,
         RegionRetention::ReplaceWithFirmware,
         RegionRole::FirmwareImage,
@@ -304,13 +304,13 @@ const MESH_TOWER_V2_REGIONS: [MemoryRegion; 8] = [
         RegionRole::Journal,
     ),
     region(
-        "radio-profile",
+        "application-data-reserved",
         FLASH,
         0xE9000,
         0xEA000,
-        RegionOwner::Radio,
+        RegionOwner::Platform,
         RegionRetention::PreserveAcrossFirmwareUpdate,
-        RegionRole::RadioProfile,
+        RegionRole::Reserved,
     ),
     region(
         "ble-identity",
@@ -339,25 +339,6 @@ const MESH_TOWER_V2_REGIONS: [MemoryRegion; 8] = [
         RegionRetention::Immutable,
         RegionRole::RecoveryBootloader,
     ),
-];
-
-const MESH_TOWER_JOURNALS: [JournalLayout; 1] =
-    [journal(0xE3000, 0xE4000, 0xE5000, 0xE7000, 0xE9000)];
-
-// The RAK4631 is configured over USB Remote Control, so its LoRa profile needs the two-page A/B
-// store the display boards use. Those pages come from the top of the firmware region; identities and
-// the journal keep their addresses, and the former single radio page stays reserved.
-const RAK4631_REGIONS: [MemoryRegion; 10] = [
-    MESH_TOWER_V2_REGIONS[0],
-    region(
-        "firmware",
-        FLASH,
-        0x26000,
-        0xE0000,
-        RegionOwner::FirmwareImage,
-        RegionRetention::ReplaceWithFirmware,
-        RegionRole::FirmwareImage,
-    ),
     region(
         "radio-profile",
         FLASH,
@@ -367,19 +348,20 @@ const RAK4631_REGIONS: [MemoryRegion; 10] = [
         RegionRetention::PreserveAcrossFirmwareUpdate,
         RegionRole::RadioProfile,
     ),
+];
+
+const MESH_TOWER_JOURNALS: [JournalLayout; 1] =
+    [journal(0xE3000, 0xE4000, 0xE5000, 0xE7000, 0xE9000)];
+
+const RAK4631_REGIONS: [MemoryRegion; 10] = [
+    MESH_TOWER_V2_REGIONS[0],
+    MESH_TOWER_V2_REGIONS[1],
     MESH_TOWER_V2_REGIONS[2],
     MESH_TOWER_V2_REGIONS[3],
-    region(
-        "application-data-reserved",
-        FLASH,
-        0xE9000,
-        0xEA000,
-        RegionOwner::Platform,
-        RegionRetention::PreserveAcrossFirmwareUpdate,
-        RegionRole::Reserved,
-    ),
+    MESH_TOWER_V2_REGIONS[4],
     MESH_TOWER_V2_REGIONS[5],
     MESH_TOWER_V2_REGIONS[6],
+    MESH_TOWER_V2_REGIONS[8],
     region(
         "factory-reserved",
         FLASH,
@@ -447,7 +429,7 @@ const WIO_TRACKER_L1_REGIONS: [MemoryRegion; 9] = [
     ),
 ];
 
-const T1000E_REGIONS: [MemoryRegion; 7] = [
+const T1000E_REGIONS: [MemoryRegion; 8] = [
     region(
         "platform-firmware",
         FLASH,
@@ -461,7 +443,7 @@ const T1000E_REGIONS: [MemoryRegion; 7] = [
         "firmware",
         FLASH,
         0x27000,
-        0xE9000,
+        0xE7000,
         RegionOwner::FirmwareImage,
         RegionRetention::ReplaceWithFirmware,
         RegionRole::FirmwareImage,
@@ -510,6 +492,15 @@ const T1000E_REGIONS: [MemoryRegion; 7] = [
         RegionOwner::Platform,
         RegionRetention::Immutable,
         RegionRole::RecoveryBootloader,
+    ),
+    region(
+        "radio-profile",
+        FLASH,
+        0xE7000,
+        0xE9000,
+        RegionOwner::Radio,
+        RegionRetention::PreserveAcrossFirmwareUpdate,
+        RegionRole::RadioProfile,
     ),
 ];
 
@@ -580,7 +571,7 @@ pub const T1000_E: MemoryProfile = MemoryProfile {
     architecture: ProcessorArchitecture::ThumbV7em,
     address_spaces: &NRF52840_T1000E_RAM_SPACES,
     regions: &T1000E_REGIONS,
-    firmware: firmware_placement(0x27000, 0xE9000, 0xEA000),
+    firmware: firmware_placement(0x27000, 0xE7000, 0xEA000),
     journals: &T1000E_JOURNALS,
     runtime_reservations: &NRF_RUNTIME_RESERVATIONS,
 };
@@ -590,7 +581,7 @@ pub const MESH_TOWER_V2: MemoryProfile = MemoryProfile {
     architecture: ProcessorArchitecture::ThumbV7em,
     address_spaces: &NRF52840_S140_RAM_SPACES,
     regions: &MESH_TOWER_V2_REGIONS,
-    firmware: firmware_placement(0x26000, 0xE2000, 0xE2000),
+    firmware: firmware_placement(0x26000, 0xE0000, 0xE0000),
     journals: &MESH_TOWER_JOURNALS,
     runtime_reservations: &NRF_RUNTIME_RESERVATIONS,
 };
@@ -600,7 +591,7 @@ pub const MUZI_BASE_DUO: MemoryProfile = MemoryProfile {
     architecture: ProcessorArchitecture::ThumbV7em,
     address_spaces: &NRF52840_S140_RAM_SPACES,
     regions: &MESH_TOWER_V2_REGIONS,
-    firmware: firmware_placement(0x26000, 0xE2000, 0xE2000),
+    firmware: firmware_placement(0x26000, 0xE0000, 0xE0000),
     journals: &MESH_TOWER_JOURNALS,
     runtime_reservations: &NRF_RUNTIME_RESERVATIONS,
 };
@@ -625,19 +616,24 @@ pub const WIO_TRACKER_L1: MemoryProfile = MemoryProfile {
     runtime_reservations: &NRF_RUNTIME_RESERVATIONS,
 };
 
-/// Seeed's XIAO nRF52840 carries the same Adafruit UF2 bootloader 0.6.x and S140 7.3.0 as the Wio
-/// Tracker L1, and the same Meshtastic InternalFS at 0xED000..0xF4000, so it shares that map.
-pub const XIAO_NRF52840: MemoryProfile = MemoryProfile {
-    id: MemoryProfileId("xiao-nrf52840"),
-    architecture: ProcessorArchitecture::ThumbV7em,
-    address_spaces: &NRF52840_S140_RAM_SPACES,
-    regions: &WIO_TRACKER_L1_REGIONS,
-    firmware: firmware_placement(0x27000, 0xE1000, 0xE1000),
-    journals: &HELTEC_DISPLAY_JOURNALS,
-    runtime_reservations: &NRF_RUNTIME_RESERVATIONS,
+pub const SENSECAP_SOLAR_NODE: MemoryProfile = MemoryProfile {
+    id: MemoryProfileId("sensecap-solar-node"),
+    ..T1000_E
 };
 
-const NRF52840_MEMORY_X_PROFILES: [MemoryProfileId; 12] = [
+pub const RAK10724: MemoryProfile = MemoryProfile {
+    id: MemoryProfileId("rak10724"),
+    ..RAK4631
+};
+
+/// Seeed's XIAO nRF52840 ships the same Adafruit UF2 bootloader with S140 7.3.0 as the Wio
+/// Tracker L1, and Meshtastic keeps the same InternalFS above it, so it shares that map.
+pub const XIAO_NRF52840: MemoryProfile = MemoryProfile {
+    id: MemoryProfileId("xiao-nrf52840"),
+    ..WIO_TRACKER_L1
+};
+
+const NRF52840_MEMORY_X_PROFILES: [MemoryProfileId; 14] = [
     T_ECHO_S140_V6.id,
     T_ECHO_S140_V7.id,
     T096.id,
@@ -645,9 +641,11 @@ const NRF52840_MEMORY_X_PROFILES: [MemoryProfileId; 12] = [
     MESH_POCKET_5000.id,
     MESH_POCKET_10000.id,
     T1000_E.id,
+    SENSECAP_SOLAR_NODE.id,
     MESH_TOWER_V2.id,
     MUZI_BASE_DUO.id,
     RAK4631.id,
+    RAK10724.id,
     WIO_TRACKER_L1.id,
     XIAO_NRF52840.id,
 ];

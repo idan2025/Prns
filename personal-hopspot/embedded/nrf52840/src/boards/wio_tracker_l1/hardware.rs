@@ -40,7 +40,7 @@ type WioSpiDevice = ExclusiveDevice<Spim<'static>, Output<'static>, Delay>;
 
 type WioRadio = Sx126x<WioSpiDevice, Input<'static>, Input<'static>, Output<'static>, Delay>;
 
-pub(crate) type WioLoraInterface = LoRaInterface<'static, WioRadio>;
+pub(crate) type WioLoraInterface = LoRaInterface<'static, 'static, WioRadio>;
 
 pub(crate) type WioDisplayBringup = BoardDisplay<super::DisplayDriver>;
 
@@ -170,7 +170,9 @@ impl WioBoard {
             twim_config,
             TWIM_TX_BUFFER.take(),
         );
-        let mut display = super::DisplayDriver::new(display_bus);
+        static DISPLAYED_PAGES: ConstStaticCell<super::display::PageCache> =
+            ConstStaticCell::new(super::display::PageCache::new());
+        let mut display = super::DisplayDriver::new(display_bus, DISPLAYED_PAGES.take());
         let display = match display.initialize().await {
             Ok(()) => BoardDisplay::initialized(display),
             Err(_) => {

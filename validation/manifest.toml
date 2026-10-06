@@ -12,25 +12,25 @@ nightly = "nightly-2025-11-21"
 environment = "SMOKE_PYTHON"
 venv = "validation/.venv/rns-{version}"
 requirements = "validation/oracles/requirements.txt"
-version = "1.4.2"
+version = "1.5.4"
 
 [interpreters.rpc]
 environment = "RPC_SMOKE_PYTHON"
 venv = "validation/.venv/rns-rpc-{version}"
 requirements = "validation/oracles/requirements.txt"
-version = "1.4.2"
+version = "1.5.4"
 
 [interpreters.interop_smoke]
 environment = "SMOKE_PYTHON"
 venv = "validation/.venv/rns-interop-{version}"
 requirements = "validation/interop/requirements.txt"
-version = "1.5.0"
+version = "1.5.4"
 
 [interpreters.interop_rpc]
 environment = "RPC_SMOKE_PYTHON"
 venv = "validation/.venv/rns-interop-rpc-{version}"
 requirements = "validation/interop/requirements.txt"
-version = "1.5.0"
+version = "1.5.4"
 
 [registry]
 cargo_lock_workspaces = [
@@ -75,6 +75,8 @@ cargo_manifests = [
     "personal-hopspot/embedded/esp32/Cargo.toml",
     "personal-hopspot/embedded/esp32/platform-assurance/Cargo.toml",
     "personal-hopspot/embedded/esp32/boards/heltec-e290/Cargo.toml",
+    "personal-hopspot/embedded/esp32/boards/heltec-v3/Cargo.toml",
+    "personal-hopspot/embedded/esp32/boards/xiao-esp32s3-wio-sx1262/Cargo.toml",
     "personal-hopspot/embedded/esp32/boards/heltec-v4/Cargo.toml",
     "personal-hopspot/embedded/esp32/boards/heltec-v4-r8/Cargo.toml",
     "personal-hopspot/embedded/esp32/boards/heltec-wireless-stick-lite-v3/Cargo.toml",
@@ -483,6 +485,8 @@ command = ["bash", "validation/security/deps-audit.sh"]
 inputs = [
   "validation/security/deps-audit.sh",
   "validation/security/license-policy-parity.py",
+  "validation/security/npm-production-audit.py",
+  "validation/security/npm_lockfile.py",
   "deny.toml",
   "about.toml",
 ]
@@ -609,7 +613,8 @@ domain = "integration"
 tiers = ["pr", "release", "scheduled"]
 platform = "any"
 toolchain = "stable"
-timeout_seconds = 600
+# Includes cold compilation and the complete deterministic fleet/recovery matrix.
+timeout_seconds = 1200
 command = ["cargo", "test", "--locked", "-p", "prns-simulation", "--features", "controlled-time"]
 inputs = ["validation/simulation", "personal-rns", "prns-core", "prns-runtime", "prns-interfaces/impls/tokio", "prns-interfaces/impls/embassy", "personal-hopspot/core"]
 artifacts = "validation-artifacts/results/virtual-device-simulation"
@@ -655,7 +660,7 @@ platform = "linux"
 toolchain = "python"
 timeout_seconds = 600
 command = ["bash", "validation/release/contracts.sh"]
-inputs = ["tools/tests", "tools/release", "prnsd/Cargo.toml", "validation/release/contracts.sh", "validation/release/prnsd-feature-contracts.py", "validation/release/workflow-contracts.py", "validation/release/acceptance-doc-contracts.py", "release/acceptance/README.md", "release/acceptance/QUALIFICATION.md", "release/acceptance/rosters/README.md", "release/flash/README.md", "release/flash/boards.json", "docs/release-dependency-audit.md"]
+inputs = ["tools/tests", "tools/release", "prnsd/Cargo.toml", "validation/release/contracts.sh", "validation/release/prnsd-feature-contracts.py", "validation/release/workflow-contracts.py", "validation/release/acceptance-doc-contracts.py", "release/acceptance/README.md", "release/acceptance/QUALIFICATION.md", "release/acceptance/rosters/README.md", "release/deployment", "release/flash/README.md", "release/flash/boards.json", "docs/release-dependency-audit.md"]
 artifacts = "validation-artifacts/results/release-contracts"
 
 [[suite]]
@@ -780,7 +785,7 @@ group = "embedded-platform"
 tiers = ["release", "scheduled"]
 platform = "any"
 toolchain = "stable"
-enforcement = "advisory"
+enforcement = "required"
 timeout_seconds = 1800
 command = ["__RUNNER_PYTHON__", "-m", "validation.hardening.embedded_platform.run"]
 inputs = [
@@ -806,7 +811,7 @@ group = "embedded-platform"
 tiers = ["release", "scheduled"]
 platform = "any"
 toolchain = "esp"
-enforcement = "advisory"
+enforcement = "required"
 timeout_seconds = 1800
 command = ["__RUNNER_PYTHON__", "-m", "validation.hardening.embedded_platform.run"]
 inputs = [
@@ -840,18 +845,24 @@ artifacts = "validation-artifacts/results/embedded-platform-esp32s3"
 id = "embedded-miri-quick"
 domain = "hardening"
 group = "embedded-miri"
-tiers = ["pr"]
+tiers = ["pr", "release"]
 platform = "any"
 toolchain = "nightly"
-timeout_seconds = 3600
+timeout_seconds = 900
 command = ["__RUNNER_PYTHON__", "-m", "validation.hardening.embedded_miri", "quick"]
 inputs = [
     "validation/hardening/embedded_miri.py",
+    "validation/hardening/embedded_miri_execution.py",
+    "validation/hardening/embedded_miri_shards.py",
+    "validation/hardening/embedded_miri_distribution.py",
+    "validation/run.py",
     "validation/hardening/embedded-miri.toml",
     "validation/hardening/embedded_failure.py",
     "personal-hopspot/assurance",
     "prns-interfaces/impls/embassy/src/radios",
     "prns-runtime/impls/embassy/src/runtime/embedded_persistence",
+    "prns-runtime/impls/embassy/src/runtime/node_facade/mod.rs",
+    "prns-core/src/remote_control/test_support.rs",
     "prns-core/src/persistence",
 ]
 artifacts = "validation-artifacts/results/embedded-miri-quick"
@@ -860,18 +871,25 @@ artifacts = "validation-artifacts/results/embedded-miri-quick"
 id = "embedded-miri-full"
 domain = "hardening"
 group = "embedded-miri"
-tiers = ["release", "scheduled"]
+tiers = ["scheduled"]
 platform = "any"
 toolchain = "nightly"
-timeout_seconds = 7200
+timeout_seconds = 18000
+shards = 8
 command = ["__RUNNER_PYTHON__", "-m", "validation.hardening.embedded_miri", "full"]
 inputs = [
     "validation/hardening/embedded_miri.py",
+    "validation/hardening/embedded_miri_execution.py",
+    "validation/hardening/embedded_miri_shards.py",
+    "validation/hardening/embedded_miri_distribution.py",
+    "validation/run.py",
     "validation/hardening/embedded-miri.toml",
     "validation/hardening/embedded_failure.py",
     "personal-hopspot/assurance",
     "prns-interfaces/impls/embassy/src/radios",
     "prns-runtime/impls/embassy/src/runtime/embedded_persistence",
+    "prns-runtime/impls/embassy/src/runtime/node_facade/mod.rs",
+    "prns-core/src/remote_control/test_support.rs",
     "prns-core/src/persistence",
 ]
 artifacts = "validation-artifacts/results/embedded-miri-full"
@@ -2307,3 +2325,64 @@ timeout_seconds = 1800
 command = ["cargo", "test", "--locked", "-p", "prns-simulation", "--features", "controlled-time,heap-profile", "--test", "halow", "thirty_two_cycles_release_halow_owners", "--", "--ignored", "--nocapture"]
 inputs = ["validation/simulation", "personal-rns", "prns-core", "prns-runtime", "prns-interfaces/impls/tokio", "personal-hopspot/core"]
 artifacts = "validation-artifacts/results/halow-resource-stability"
+
+[[kani]]
+name = "transaction_success_requires_hardware_and_durable_agreement"
+source = "prns-core/src/interfaces/lora/configuration/kani_proofs.rs"
+group = "lora"
+tiers = ["release", "scheduled"]
+
+
+[[suite]]
+id = "lora-dual-band-core"
+domain = "native"
+group = "lora"
+tiers = ["pr", "release", "scheduled"]
+platform = "any"
+toolchain = "stable"
+timeout_seconds = 600
+command = ["cargo", "test", "--locked", "-p", "prns-core", "--features", "lora-2g4", "--lib"]
+inputs = ["prns-core/src/interfaces", "prns-core/src/remote_control", "prns-core/Cargo.toml"]
+artifacts = "validation-artifacts/results/lora-dual-band-core"
+
+[[suite]]
+id = "lora-dual-band-embassy"
+domain = "native"
+group = "lora"
+tiers = ["pr", "release", "scheduled"]
+platform = "any"
+toolchain = "stable"
+timeout_seconds = 600
+command = ["cargo", "test", "--locked", "--manifest-path", "prns-interfaces/impls/embassy/Cargo.toml", "--features", "lora-2g4", "--lib"]
+inputs = ["prns-interfaces/impls/embassy", "prns-runtime/core", "prns-runtime/impls/embassy", "prns-core/src/interfaces"]
+artifacts = "validation-artifacts/results/lora-dual-band-embassy"
+
+[[suite]]
+id = "lora-dual-band-hopspot"
+domain = "native"
+group = "lora"
+tiers = ["pr", "release", "scheduled"]
+platform = "any"
+toolchain = "stable"
+timeout_seconds = 600
+command = ["cargo", "test", "--locked", "-p", "personal-hopspot-core", "--features", "lora-2g4,embedded", "--lib"]
+inputs = ["personal-hopspot/core", "prns-core/src/interfaces", "personal-rns"]
+artifacts = "validation-artifacts/results/lora-dual-band-hopspot"
+
+[[kani]]
+name = "completed_configuration_tickets_cannot_settle_a_later_transaction"
+source = "prns-core/src/interfaces/lora/configuration/kani_proofs.rs"
+group = "lora"
+tiers = ["release", "scheduled"]
+
+[[kani]]
+name = "radio_outcome_codec_accepts_exactly_its_documented_tags"
+source = "prns-core/src/remote_control/radio.rs"
+group = "remote-control"
+tiers = ["release", "scheduled"]
+
+[[kani]]
+name = "radio_status_prefix_preserves_capability_and_operating_state_tags"
+source = "prns-core/src/remote_control/radio.rs"
+group = "remote-control"
+tiers = ["release", "scheduled"]

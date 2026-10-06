@@ -234,6 +234,28 @@ requires = ["bash", "cargo", "python3", "rustc"]
 setup = "Install Rust with rustup so the nRF52840 target and llvm-tools-preview component declared by the firmware workspace are available."
 
 [[task]]
+id = "build.hopspot.xiao-nrf52840"
+summary = "Build the headless Seeed XIAO nRF52840 + Wio-SX1262 firmware with S140 7.3.0 Bluetooth Auto and package its developer UF2."
+domain = "build"
+effect = "workspace-write"
+platforms = ["linux", "macos"]
+audience = ["developer", "ci"]
+entrypoint = ["bash", "tools/build/hopspot-nrf52840.sh", "xiao-nrf52840"]
+requires = ["bash", "cargo", "python3", "rustc"]
+setup = "Install Rust with rustup so the nRF52840 target and llvm-tools-preview component declared by the firmware workspace are available."
+
+[[task]]
+id = "build.hopspot.sensecap-solar-node"
+summary = "Build the headless Seeed SenseCAP Solar Node firmware and package its recovery-compatible developer UF2."
+domain = "build"
+effect = "workspace-write"
+platforms = ["linux", "macos"]
+audience = ["developer", "ci"]
+entrypoint = ["bash", "tools/build/hopspot-nrf52840.sh", "sensecap-solar-node"]
+requires = ["bash", "cargo", "python3", "rustc"]
+setup = "Install Rust with rustup so the nRF52840 target and llvm-tools-preview component declared by the firmware workspace are available."
+
+[[task]]
 id = "build.hopspot.mesh-tower-v2"
 summary = "Build the headless Heltec MeshTower V2 firmware with S140 6.1.1 Bluetooth Auto and package its recovery-compatible developer UF2."
 domain = "build"
@@ -440,7 +462,7 @@ requires = ["cargo", "python"]
 
 [[task]]
 id = "repo.cargo-check"
-summary = "Compile-check every host-compatible first-party Cargo workspace in parallel."
+summary = "Compile-check every host-compatible first-party Cargo workspace with shared dependencies and parallel compilation."
 domain = "repo"
 effect = "workspace-write"
 platforms = ["any"]
@@ -920,7 +942,7 @@ requires = ["bash"]
 
 [[task]]
 id = "release.acceptance.validate"
-summary = "Validate signed physical qualification and its complete evidence set."
+summary = "Validate exact-candidate automated or historical physical acceptance."
 domain = "release"
 effect = "read-only"
 platforms = ["any"]
@@ -960,7 +982,7 @@ requires = ["python3"]
 
 [[task]]
 id = "release.tester-roster.create"
-summary = "Create a versioned tester-roster scaffold from the catalog-aware template."
+summary = "Create a release-owner record or historical physical roster for a version."
 domain = "release"
 effect = "workspace-write"
 platforms = ["any"]
@@ -970,7 +992,7 @@ requires = ["python3"]
 
 [[task]]
 id = "release.tester-roster.validate"
-summary = "Validate that a version's tester roster covers every shipping target."
+summary = "Validate the versioned release owner or historical physical tester roster."
 domain = "release"
 effect = "read-only"
 platforms = ["any"]
@@ -1000,7 +1022,7 @@ requires = ["python3"]
 
 [[task]]
 id = "release.candidate.verify"
-summary = "Verify a signed candidate and optional physical qualification evidence."
+summary = "Verify a signed candidate and optional release acceptance evidence."
 domain = "release"
 effect = "read-only"
 platforms = ["any"]
@@ -1083,8 +1105,16 @@ path = "tools/device/developer_flasher_candidate.py"
 reason = "Validated local developer candidate boundary shared by the developer flasher workflow and its focused tests."
 
 [[internal]]
+path = "tools/release/flasher_software_acceptance.py"
+reason = "Exact-source automated acceptance validation shared by candidate generation and signed release qualification."
+
+[[internal]]
 path = "tools/release/flasher_acceptance_contract.py"
 reason = "Shared acceptance schema and scaffold implementation used by release commands and bundled qualification tools."
+
+[[internal]]
+path = "tools/release/deployment_qualification_policy.py"
+reason = "Version-bound deployment qualification policy shared by signed suite records and promotion."
 
 [[internal]]
 path = "tools/release/flasher_board_catalog.py"
@@ -1215,3 +1245,15 @@ platforms = ["any"]
 audience = ["developer", "ci"]
 entrypoint = ["python", "tools/repo/halow-simulation.py"]
 requires = ["cargo", "python"]
+
+[[task]]
+id = "build.hopspot.rak10724"
+summary = "Build the headless RAK WisMesh 1W 4631 firmware with S140 6.1.1 Bluetooth Auto and package its recovery-compatible developer UF2."
+domain = "build"
+effect = "workspace-write"
+platforms = ["linux", "macos"]
+audience = ["developer", "ci"]
+entrypoint = ["bash", "tools/build/hopspot-nrf52840.sh", "rak10724"]
+requires = ["bash", "cargo", "python3", "rustc"]
+setup = "Install Rust with rustup so the nRF52840 target and llvm-tools-preview component declared by the firmware workspace are available."
+

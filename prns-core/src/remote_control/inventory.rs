@@ -10,7 +10,7 @@ use super::{
     SetRemoteControlControllerGrantOutcome,
 };
 use crate::identity::{IdentityHash, PublicIdentityMaterial, IDENTITY_PUBLIC_KEY_LEN};
-use crate::interfaces::lora::RadioProfile;
+use crate::interfaces::lora::{LoRaProfile, RadioProfile};
 use crate::interfaces::{
     ConnectionState, DiscoveryGroupId, DiscoveryGroupSet, InterfaceId, InterfaceKind,
     InterfaceMode, PeerDetails, RadioIndication, INTERFACE_ID_LEN, MAX_DISCOVERY_GROUPS,
@@ -34,7 +34,7 @@ pub const REMOTE_CONTROL_INTERFACE_GROUP_CAP: usize = 32;
 pub const REMOTE_CONTROL_INTERFACE_CONFIG_CAP: usize = 48;
 pub const REMOTE_CONTROL_BUILD_VERSION_CAP: usize = 48;
 /// A node's human-facing name, as announced to other Reticulum nodes and apps.
-pub const REMOTE_CONTROL_NODE_NAME_CAP: usize = 32;
+pub const REMOTE_CONTROL_NODE_NAME_CAP: usize = 64;
 /// Version byte that prefixes a persisted node name record.
 pub const NODE_NAME_SNAPSHOT_VERSION: u8 = 1;
 /// A persisted node name: version byte, length byte, then the UTF-8 name.
@@ -1250,8 +1250,16 @@ impl RemoteControlLoRaProfile {
 
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
-        let profile = RadioProfile::parse_inventory_config(text)?;
-        Self::from_profile(profile)
+        Self::from_band_profile(LoRaProfile::parse_inventory_config(text)?)
+    }
+
+    pub fn from_band_profile(profile: LoRaProfile) -> Option<Self> {
+        profile.validate().ok()?;
+        Self::from_canonical(profile.inventory_config().as_str())
+    }
+
+    pub fn band_profile(self) -> Option<LoRaProfile> {
+        LoRaProfile::parse_inventory_config(self.as_str()?)
     }
 
     #[must_use]
@@ -1375,7 +1383,7 @@ impl RemoteControlBuildVersion {
     }
 }
 
-/// A node name a controller may set: 1..=32 bytes of UTF-8 without control characters and
+/// A node name a controller may set: 1..=64 bytes of UTF-8 without control characters and
 /// without surrounding whitespace, so what other nodes display is exactly what was entered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteControlNodeName {

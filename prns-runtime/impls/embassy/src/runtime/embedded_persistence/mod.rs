@@ -6,7 +6,7 @@ use super::discovery_group_store::{
 use super::discovery_group_store::{
     DiscoveryGroupConfigurationStoreExchange, GlobalDiscoveryGroupStore,
 };
-use super::node_name_store::NODE_NAME_STORE;
+use super::node_name_store::{GlobalNodeNameStore, NodeNameStoreExchange};
 use embedded_storage_async::nor_flash::NorFlash;
 use heapless::Vec as HeaplessVec;
 
@@ -344,12 +344,14 @@ pub struct EmbeddedFlashPersistence<
     Observe,
     const PENDING: usize,
     Groups = GlobalDiscoveryGroupStore,
+    Names = GlobalNodeNameStore,
 > where
     F: NorFlash,
     Keys: RouteSnapshotKeys,
     Observe: FnMut(EmbeddedPersistenceDiagnostic),
 {
     groups: Groups,
+    names: Names,
     flash: Option<F>,
     journal: Option<FlashJournal<F>>,
     layout: FlashJournalLayout,
@@ -393,13 +395,14 @@ where
         compaction_route_keys: Keys,
         observe_diagnostic: Observe,
     ) -> Self {
-        Self::with_discovery_group_store(
+        Self::with_configuration_stores(
             flash,
             layout,
             policy,
             compaction_route_keys,
             observe_diagnostic,
             GlobalDiscoveryGroupStore,
+            GlobalNodeNameStore,
         )
     }
 }
@@ -412,8 +415,9 @@ where
     Observe: FnMut(EmbeddedPersistenceDiagnostic),
     Groups: AsRef<DiscoveryGroupConfigurationStoreExchange>,
 {
-    /// Uses one node's exchange for restore publication and all group persistence work.
-    /// The exchange must not be shared with another active persistence owner.
+    /// Uses one node's group exchange and owns a private name exchange.
+    /// Use `with_configuration_stores` to expose both exchanges to controllers.
+    /// The group exchange must not be shared with another active persistence owner.
     #[must_use]
     pub fn with_discovery_group_store(
         flash: F,
@@ -422,9 +426,42 @@ where
         compaction_route_keys: Keys,
         observe_diagnostic: Observe,
         groups: Groups,
+    ) -> EmbeddedFlashPersistence<F, Keys, Observe, PENDING, Groups, NodeNameStoreExchange> {
+        EmbeddedFlashPersistence::with_configuration_stores(
+            flash,
+            layout,
+            policy,
+            compaction_route_keys,
+            observe_diagnostic,
+            groups,
+            NodeNameStoreExchange::new(),
+        )
+    }
+}
+
+impl<F, Keys, Observe, const PENDING: usize, Groups, Names>
+    EmbeddedFlashPersistence<F, Keys, Observe, PENDING, Groups, Names>
+where
+    F: NorFlash,
+    Keys: RouteSnapshotKeys,
+    Observe: FnMut(EmbeddedPersistenceDiagnostic),
+    Groups: AsRef<DiscoveryGroupConfigurationStoreExchange>,
+    Names: AsRef<NodeNameStoreExchange>,
+{
+    /// Each active node owns separate exchanges for its durable configuration.
+    #[must_use]
+    pub fn with_configuration_stores(
+        flash: F,
+        layout: FlashJournalLayout,
+        policy: EmbeddedPersistencePolicy,
+        compaction_route_keys: Keys,
+        observe_diagnostic: Observe,
+        groups: Groups,
+        names: Names,
     ) -> Self {
         Self {
             groups,
+            names,
             flash: Some(flash),
             journal: None,
             layout,
@@ -517,7 +554,7 @@ where
         let Ok((mut journal, restored)) = opened else {
             report.warning = Some(FlashJournalWarning::Corrupt);
             self.groups.as_ref().publish_restored(None);
-            NODE_NAME_STORE.publish_restored(None);
+            self.names.as_ref().publish_restored(None);
             (self.observe_diagnostic)(EmbeddedPersistenceDiagnostic::Restored(report));
             return report;
         };
@@ -527,7 +564,7 @@ where
         self.groups
             .as_ref()
             .publish_restored(discovery_group_configuration_snapshot);
-        NODE_NAME_STORE.publish_restored(node_name);
+        self.names.as_ref().publish_restored(node_name);
         let initialization_failed =
             restored.active_epoch.is_none() && journal.initialize_empty().await.is_err();
         self.next_compaction_not_before = timebase_state
@@ -553,7 +590,7 @@ where
         warning: Option<FlashJournalWarning>,
     ) -> EmbeddedPersistenceRestoreReport {
         self.groups.as_ref().publish_restored(None);
-        NODE_NAME_STORE.publish_restored(None);
+        self.names.as_ref().publish_restored(None);
         let report = EmbeddedPersistenceRestoreReport {
             logical_start,
             route_seeded_count: 0,
@@ -699,7 +736,7 @@ where
         // A pending settings change is due now: the manifold only runs `progress` once the
         // deadline passes, and `wait_for_work` keeps waking it until the change is taken.
         let configuration_pending =
-            self.groups.as_ref().has_pending_request() || NODE_NAME_STORE.has_pending_request();
+            self.groups.as_ref().has_pending_request() || self.names.as_ref().has_pending_request();
         if self.journal.is_none() {
             return configuration_pending.then_some(now);
         }
@@ -774,7 +811,12 @@ where
         }) {
             return;
         }
-        if let Some(change) = self.groups.as_ref().try_take_request() {
+        // Finish an uncertain name append before a newer group request can claim the writer.
+        let group_change = match self.pending_confirmation {
+            Some((_, FlashJournalRecordKind::NodeName)) => None,
+            _ => self.groups.as_ref().try_take_request(),
+        };
+        if let Some(change) = group_change {
             match self
                 .store_discovery_group_configuration_change(engine, &change, now)
                 .await
@@ -799,18 +841,18 @@ where
             }
             return;
         }
-        if let Some(name) = NODE_NAME_STORE.try_take_request() {
+        if let Some(name) = self.names.as_ref().try_take_request() {
             match self.store_node_name(engine, name, now).await {
                 StoreRemoteControlAuthorizationSnapshotOutcome::Stored => {
-                    NODE_NAME_STORE.commit(name);
-                    NODE_NAME_STORE.settle(Ok(()));
+                    self.names.as_ref().commit(name);
+                    self.names.as_ref().settle(Ok(()));
                 }
                 StoreRemoteControlAuthorizationSnapshotOutcome::CompactionInProgress
                 | StoreRemoteControlAuthorizationSnapshotOutcome::ConfirmationPending { .. } => {
-                    NODE_NAME_STORE.resignal_request(name);
+                    self.names.as_ref().resignal_request(name);
                 }
                 StoreRemoteControlAuthorizationSnapshotOutcome::Failed { failure, .. } => {
-                    NODE_NAME_STORE.settle(Err(failure));
+                    self.names.as_ref().settle(Err(failure));
                 }
             }
             return;
@@ -1370,7 +1412,7 @@ where
             }
             CompactionPhase::NodeName => {
                 let mut encoded = [0u8; NODE_NAME_SNAPSHOT_MAX_LEN];
-                let Some(written) = NODE_NAME_STORE.encode_restored(&mut encoded) else {
+                let Some(written) = self.names.as_ref().encode_restored(&mut encoded) else {
                     self.compaction = Some(CompactionPhase::Commit);
                     return;
                 };
@@ -1551,20 +1593,22 @@ pub(crate) trait ManifoldPersistence<S: StorageLayout> {
     ) -> StoreRemoteControlAuthorizationSnapshotOutcome;
 }
 
-impl<S, F, Keys, Observe, const PENDING: usize, Groups> ManifoldPersistence<S>
-    for EmbeddedFlashPersistence<F, Keys, Observe, PENDING, Groups>
+impl<S, F, Keys, Observe, const PENDING: usize, Groups, Names> ManifoldPersistence<S>
+    for EmbeddedFlashPersistence<F, Keys, Observe, PENDING, Groups, Names>
 where
     S: StorageLayout,
     F: NorFlash,
     Keys: RouteSnapshotKeys,
     Observe: FnMut(EmbeddedPersistenceDiagnostic),
     Groups: AsRef<DiscoveryGroupConfigurationStoreExchange>,
+    Names: AsRef<NodeNameStoreExchange>,
 {
     fn has_pending_configuration_change(&self) -> bool {
         self.pending_confirmation.is_none_or(|(_, kind)| {
             kind == FlashJournalRecordKind::DiscoveryGroupConfigurations
                 || kind == FlashJournalRecordKind::NodeName
-        }) && (self.groups.as_ref().has_pending_request() || NODE_NAME_STORE.has_pending_request())
+        }) && (self.groups.as_ref().has_pending_request()
+            || self.names.as_ref().has_pending_request())
     }
 
     fn observe(&mut self, journaled: &Journaled<'_>, now: InstantMillis) {
@@ -1581,7 +1625,7 @@ where
         }
         embassy_futures::select::select(
             self.groups.as_ref().wait_until_request_ready(),
-            NODE_NAME_STORE.wait_until_request_ready(),
+            self.names.as_ref().wait_until_request_ready(),
         )
         .await;
     }
