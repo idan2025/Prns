@@ -700,15 +700,22 @@ pub async fn run(spawner: Spawner) -> ! {
             lora_controller,
             node_page_destination,
         });
-        selected::run(
+        let run = selected::run(
             io,
             lora.run(lora_seam),
             face,
             bluetooth::run(sd, bluetooth),
             button,
             gnss,
-        )
-        .await;
+        );
+        // The Wio otherwise announces only from its menu, so a peer that comes into range would not
+        // learn it until someone used that menu.
+        #[cfg(feature = "board-wio-tracker-l1")]
+        let run = embassy_futures::join::join(
+            run,
+            node_page_announce::announce_to_new_bluetooth_peers(node_page_destination),
+        );
+        run.await;
     }
     #[cfg(feature = "board-t114")]
     {
@@ -791,6 +798,7 @@ fn ignore_events(_event: PrnsEvent<'_>, _state: &AppState) {}
 #[cfg(any(
     feature = "board-t1000e",
     feature = "board-sensecap-solar-node",
-    feature = "board-xiao-nrf52840"
+    feature = "board-xiao-nrf52840",
+    feature = "board-wio-tracker-l1"
 ))]
 mod node_page_announce;
