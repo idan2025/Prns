@@ -1372,6 +1372,7 @@ dependencies = [
  "futures-util",
  "hex",
  "personal-hopspot-core",
+ "personal-hopspot-memory",
  "personal-rns",
  "serde_json",
  "tempfile",
@@ -1379,6 +1380,10 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
 ]
+
+[[package]]
+name = "personal-hopspot-memory"
+version = "0.1.0"
 
 [[package]]
 name = "personal-rns"

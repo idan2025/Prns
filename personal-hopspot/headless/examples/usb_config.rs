@@ -1,4 +1,4 @@
-//! Configure a screenless Hopspot (RAK4631) over USB with Remote Control.
+//! Configure a screenless nRF52840 Hopspot over USB with Remote Control.
 //!
 //! `provision` merges the firmware UF2 with a Remote Control vault page that installs this
 //! controller as the target's factory Administrator, so one drag-and-drop both flashes the board
@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use personal_hopspot_headless::control::public_identity;
+use personal_hopspot_memory::{memory_profile_named, ProcessorArchitecture, RegionRole};
 use personal_rns::identity::{PrivateIdentityMaterial, PublicIdentityMaterial};
 use personal_rns::interfaces::subghz::RegulatoryRegion;
 use personal_rns::interfaces::InterfaceId;
@@ -23,31 +24,20 @@ use personal_rns::runtime::{generate_identity_secret, RemoteControlIdentityDirec
 use personal_rns::usb_auto::AutoUsb;
 use serde_json::json;
 
-/// Boards whose firmware reads a flash-time owner grant, with the address of their
-/// `remote-control-identity` region (personal-hopspot/memory nRF52840 profiles).
-#[derive(Clone, Copy, ValueEnum)]
-enum Board {
-    Rak4631,
-    WioTrackerL1,
-    XiaoNrf52840,
+/// Address of the `remote-control-identity` page in a UF2-flashed nRF52840 memory profile, which the
+/// firmware reads at boot for the target identity and its factory owner grant.
+fn remote_control_identity_address(board: &str) -> Result<u32, Error> {
+    let unsupported = || Error::Board(board.to_string());
+    let profile = memory_profile_named(board).ok_or_else(unsupported)?;
+    if profile.architecture != ProcessorArchitecture::ThumbV7em {
+        return Err(unsupported());
+    }
+    let region = profile
+        .unique_region_for_role(RegionRole::RemoteControlIdentity)
+        .map_err(|_| unsupported())?;
+    u32::try_from(region.range.start()).map_err(|_| unsupported())
 }
 
-impl Board {
-    const fn remote_control_identity_address(self) -> u32 {
-        match self {
-            Self::Rak4631 => 0xE2000,
-            Self::WioTrackerL1 | Self::XiaoNrf52840 => 0xE1000,
-        }
-    }
-
-    const fn slug(self) -> &'static str {
-        match self {
-            Self::Rak4631 => "rak4631",
-            Self::WioTrackerL1 => "wio-tracker-l1",
-            Self::XiaoNrf52840 => "xiao-nrf52840",
-        }
-    }
-}
 const UF2_MAGIC_START0: u32 = 0x0A32_4655;
 const UF2_MAGIC_START1: u32 = 0x9E5D_5157;
 const UF2_MAGIC_END: u32 = 0x0AB1_6F30;
@@ -73,9 +63,10 @@ struct Options {
 enum Command {
     /// Build a UF2 that flashes the firmware and installs this controller as the board's owner.
     Provision {
-        /// Which board the UF2 is for; sets where the owner page is written.
-        #[arg(long, value_enum, default_value = "rak4631")]
-        board: Board,
+        /// The board's memory profile (rak4631, rak10724, wio-tracker-l1, ...); it sets where the
+        /// owner page is written.
+        #[arg(long, default_value = "rak4631")]
+        board: String,
         /// Firmware UF2 from `tools/build/hopspot-nrf52840.sh BOARD`.
         #[arg(long)]
         firmware: PathBuf,
@@ -130,7 +121,7 @@ enum Command {
     OwnerKey,
     /// Show the board's announced name, or rename it with `--set`.
     Name {
-        /// New name: 1 to 32 bytes, without leading or trailing spaces.
+        /// New name: 1 to 64 bytes of UTF-8, without control characters or surrounding whitespace.
         #[arg(long)]
         set: Option<String>,
     },
@@ -173,6 +164,8 @@ enum Error {
     Lock(std::fs::TryLockError),
     #[error("firmware UF2: {0}")]
     Uf2(String),
+    #[error("`{0}` is not a UF2-flashed nRF52840 memory profile")]
+    Board(String),
     #[error("board `{0}` is not provisioned; run `provision` first")]
     NotProvisioned(String),
     #[error("device record: {0}")]
@@ -229,8 +222,8 @@ fn uf2_block(address: u32, payload: &[u8], index: u32, total: u32) -> [u8; UF2_B
         total,
         NRF52840_UF2_FAMILY,
     ];
-    for (slot, word) in block.chunks_exact_mut(4).zip(words) {
-        slot.copy_from_slice(&word.to_le_bytes());
+    for (slot, word) in block.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+        *slot = word.to_le_bytes();
     }
     block[32..32 + payload.len()].copy_from_slice(payload);
     block[UF2_BLOCK_BYTES - 4..].copy_from_slice(&UF2_MAGIC_END.to_le_bytes());
@@ -244,12 +237,12 @@ fn le_word(block: &[u8], word: usize) -> u32 {
 /// Append the vault page to the firmware UF2, renumbering every block so the bootloader counts
 /// the combined image as one transfer.
 fn merge_uf2(firmware: &[u8], page_address: u32, page: &[u8]) -> Result<Vec<u8>, Error> {
-    if firmware.is_empty() || firmware.len() % UF2_BLOCK_BYTES != 0 {
+    if firmware.is_empty() || !firmware.len().is_multiple_of(UF2_BLOCK_BYTES) {
         return Err(Error::Uf2("not a whole number of 512-byte blocks".into()));
     }
     let page_end = u64::from(page_address) + page.len() as u64;
     let mut payloads = Vec::new();
-    for block in firmware.chunks_exact(UF2_BLOCK_BYTES) {
+    for block in firmware.as_chunks::<UF2_BLOCK_BYTES>().0 {
         if le_word(block, 0) != UF2_MAGIC_START0
             || le_word(block, 1) != UF2_MAGIC_START1
             || le_word(block, 127) != UF2_MAGIC_END
@@ -304,7 +297,8 @@ fn lock_state(state_dir: &Path) -> Result<std::fs::File, Error> {
     Ok(lock)
 }
 
-fn provision(options: &Options, board: Board, firmware: &Path, out: &Path) -> Result<(), Error> {
+fn provision(options: &Options, board: &str, firmware: &Path, out: &Path) -> Result<(), Error> {
+    let address = remote_control_identity_address(board)?;
     let (secrets, _) = RemoteControlIdentityDirectory::new(options.state_dir.join("identity"))
         .load_or_generate()?
         .into_parts();
@@ -312,16 +306,12 @@ fn provision(options: &Options, board: Board, firmware: &Path, out: &Path) -> Re
     let controller = identities.controller().public_keys();
     let target_secret = generate_identity_secret();
     let target_public = PrivateIdentityMaterial::from_bytes(*target_secret).public();
-    let page = encode_remote_control_vault_page(&target_secret, &controller)
+    let page = encode_remote_control_vault_page(&target_secret, controller)
         .map_err(|error| Error::Uf2(format!("vault page: {error:?}")))?;
-    let merged = merge_uf2(
-        &std::fs::read(firmware)?,
-        board.remote_control_identity_address(),
-        &page,
-    )?;
+    let merged = merge_uf2(&std::fs::read(firmware)?, address, &page)?;
     write_private(out, &merged)?;
     let record = json!({
-        "board": board.slug(),
+        "board": board,
         "target_public_key": hex::encode(target_public.as_bytes()),
     });
     write_private(
@@ -394,7 +384,7 @@ async fn control(options: Options) -> Result<(), Error> {
         out,
     } = &options.command
     {
-        return provision(&options, *board, firmware, out);
+        return provision(&options, board, firmware, out);
     }
     if let Command::OwnerKey = &options.command {
         let (secrets, _) = RemoteControlIdentityDirectory::new(options.state_dir.join("identity"))
@@ -602,7 +592,7 @@ async fn control(options: Options) -> Result<(), Error> {
                 println!("{}", json!({"event":"announced"}));
             }
             Command::Authorize { .. } => {
-                let controller = authorize.clone().ok_or(Error::Profile)?;
+                let controller = authorize.ok_or(Error::Profile)?;
                 let (outcome, _) = connection
                     .authorize_controller(controller, RemoteControlRequestSet::all_operator())
                     .await
