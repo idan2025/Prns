@@ -29,13 +29,14 @@ use serde_json::json;
 enum Board {
     Rak4631,
     WioTrackerL1,
+    XiaoNrf52840,
 }
 
 impl Board {
     const fn remote_control_identity_address(self) -> u32 {
         match self {
             Self::Rak4631 => 0xE2000,
-            Self::WioTrackerL1 => 0xE1000,
+            Self::WioTrackerL1 | Self::XiaoNrf52840 => 0xE1000,
         }
     }
 
@@ -43,6 +44,7 @@ impl Board {
         match self {
             Self::Rak4631 => "rak4631",
             Self::WioTrackerL1 => "wio-tracker-l1",
+            Self::XiaoNrf52840 => "xiao-nrf52840",
         }
     }
 }
@@ -334,7 +336,7 @@ fn provision(options: &Options, board: Board, firmware: &Path, out: &Path) -> Re
             "uf2": out,
             "target_hash": hex::encode(target_public.identity_hash().as_bytes()),
             "controller_hash": hex::encode(identities.controller().identity_hash().as_bytes()),
-            "note": "copy the UF2 to the RAK4631 bootloader drive, then delete it: it holds the board's private key",
+            "note": "copy the UF2 to the board's bootloader drive, then delete it: it holds the board's private key",
         })
     );
     Ok(())

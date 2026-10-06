@@ -28,6 +28,7 @@ board-muzi-base-duo = ["embassy-nrf/nfc-pins-as-gpio"]
 board-rak4631 = ["embassy-nrf/nfc-pins-as-gpio", "softdevice-s140-v6"]
 board-wio-tracker-l1 = ["personal-hopspot-core/display", "dep:embedded-graphics", "embassy-nrf/time", "softdevice-s140-v7"]
 wio-tracker-l1-pro-1w = ["board-wio-tracker-l1"]
+board-xiao-nrf52840 = ["softdevice-s140-v7"]
 softdevice-s140-v6 = ["dep:nrf-softdevice", "nrf-softdevice/s140-v6"]
 softdevice-s140-v7 = ["dep:nrf-softdevice", "nrf-softdevice/s140-v7"]
 
@@ -79,6 +80,11 @@ required-features = ["board-wio-tracker-l1"]
 name = "rak4631"
 path = "src/bin/rak4631.rs"
 required-features = ["board-rak4631"]
+
+[[bin]]
+name = "xiao-nrf52840"
+path = "src/bin/xiao_nrf52840.rs"
+required-features = ["board-xiao-nrf52840"]
 
 [dependencies]
 personal-rns = { path = "../../../personal-rns", default-features = false, features = ["embassy-host", "flash", "lora", "bluetooth-auto", "usb"] }

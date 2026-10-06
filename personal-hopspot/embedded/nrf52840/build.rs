@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use personal_hopspot_memory::{
     MemoryProfile, MESH_POCKET_10000, MESH_POCKET_5000, MESH_TOWER_V2, MUZI_BASE_DUO,
     NRF52840_MEMORY_X_BINDING, RAK4631, T096, T1000_E, T114, T_ECHO_S140_V6, T_ECHO_S140_V7,
-    WIO_TRACKER_L1,
+    WIO_TRACKER_L1, XIAO_NRF52840,
 };
 
 const BOARD_T_ECHO_FEATURE: &str = "CARGO_FEATURE_BOARD_T_ECHO";
@@ -17,6 +17,7 @@ const BOARD_MESH_TOWER_V2_FEATURE: &str = "CARGO_FEATURE_BOARD_MESH_TOWER_V2";
 const BOARD_MUZI_BASE_DUO_FEATURE: &str = "CARGO_FEATURE_BOARD_MUZI_BASE_DUO";
 const BOARD_RAK4631_FEATURE: &str = "CARGO_FEATURE_BOARD_RAK4631";
 const BOARD_WIO_TRACKER_L1_FEATURE: &str = "CARGO_FEATURE_BOARD_WIO_TRACKER_L1";
+const BOARD_XIAO_NRF52840_FEATURE: &str = "CARGO_FEATURE_BOARD_XIAO_NRF52840";
 const MESH_POCKET_5000_FEATURE: &str = "CARGO_FEATURE_MESH_POCKET_BATTERY_5000";
 const MESH_POCKET_10000_FEATURE: &str = "CARGO_FEATURE_MESH_POCKET_BATTERY_10000";
 const S140_V6_FEATURE: &str = "CARGO_FEATURE_SOFTDEVICE_S140_V6";
@@ -32,6 +33,7 @@ enum Board {
     MuziBaseDuo,
     Rak4631,
     WioTrackerL1,
+    XiaoNrf52840,
 }
 
 enum Softdevice {
@@ -87,6 +89,11 @@ fn main() {
         (Board::WioTrackerL1, Some(Softdevice::S140V6)) => {
             panic!("Wio Tracker L1 does not support S140 6.x")
         }
+        (Board::XiaoNrf52840, Some(Softdevice::S140V7)) => &XIAO_NRF52840,
+        (Board::XiaoNrf52840, None) => panic!("XIAO nRF52840 requires softdevice-s140-v7"),
+        (Board::XiaoNrf52840, Some(Softdevice::S140V6)) => {
+            panic!("XIAO nRF52840 does not support S140 6.x")
+        }
         (Board::T1000e, Some(_)) => {
             panic!("T1000-E does not support S140 compatibility features")
         }
@@ -122,17 +129,23 @@ fn selected_board() -> Board {
         env::var_os(BOARD_MUZI_BASE_DUO_FEATURE).is_some(),
         env::var_os(BOARD_RAK4631_FEATURE).is_some(),
         env::var_os(BOARD_WIO_TRACKER_L1_FEATURE).is_some(),
+        env::var_os(BOARD_XIAO_NRF52840_FEATURE).is_some(),
     ) {
-        (true, false, false, false, false, false, false, false, false) => Board::TEcho,
-        (false, true, false, false, false, false, false, false, false) => Board::T096,
-        (false, false, true, false, false, false, false, false, false) => Board::T114,
-        (false, false, false, true, false, false, false, false, false) => Board::MeshPocket,
-        (false, false, false, false, true, false, false, false, false) => Board::T1000e,
-        (false, false, false, false, false, true, false, false, false) => Board::MeshTowerV2,
-        (false, false, false, false, false, false, true, false, false) => Board::MuziBaseDuo,
-        (false, false, false, false, false, false, false, true, false) => Board::Rak4631,
-        (false, false, false, false, false, false, false, false, true) => Board::WioTrackerL1,
-        (false, false, false, false, false, false, false, false, false) => {
+        (true, false, false, false, false, false, false, false, false, false) => Board::TEcho,
+        (false, true, false, false, false, false, false, false, false, false) => Board::T096,
+        (false, false, true, false, false, false, false, false, false, false) => Board::T114,
+        (false, false, false, true, false, false, false, false, false, false) => Board::MeshPocket,
+        (false, false, false, false, true, false, false, false, false, false) => Board::T1000e,
+        (false, false, false, false, false, true, false, false, false, false) => Board::MeshTowerV2,
+        (false, false, false, false, false, false, true, false, false, false) => Board::MuziBaseDuo,
+        (false, false, false, false, false, false, false, true, false, false) => Board::Rak4631,
+        (false, false, false, false, false, false, false, false, true, false) => {
+            Board::WioTrackerL1
+        }
+        (false, false, false, false, false, false, false, false, false, true) => {
+            Board::XiaoNrf52840
+        }
+        (false, false, false, false, false, false, false, false, false, false) => {
             panic!("select exactly one nRF52840 board feature")
         }
         _ => panic!("nRF52840 board features are mutually exclusive"),

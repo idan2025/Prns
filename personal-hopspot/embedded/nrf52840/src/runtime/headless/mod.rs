@@ -13,7 +13,8 @@ use personal_rns::interfaces::lora::{AirtimePolicy, LORA_MAX_PAYLOAD};
     feature = "board-t096",
     feature = "board-t114",
     feature = "board-wio-tracker-l1",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 )))]
 use personal_rns::interfaces::subghz::SubGConfigurationState;
 use personal_rns::interfaces::usb_auto::{WEBUSB_PRODUCT_ID, WEBUSB_VENDOR_ID};
@@ -21,7 +22,11 @@ use personal_rns::interfaces::{ConnectionState, InterfaceId};
 use personal_rns::lora::{LoRaControl, LoRaInterface, LoRaInterfaceInput, LoRaSpectrumStatus};
 use personal_rns::manifold::embassy::{EmbassyHost, EmbassyInterfaceStatus, InterfaceLifecycle};
 use personal_rns::manifold::interface_seam::{Interface, EMBEDDED_MAX_WIRE_FRAME_LEN};
-#[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
+#[cfg(any(
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840",
+    feature = "board-wio-tracker-l1"
+))]
 use personal_rns::remote_control::{RemoteControlControllerGrant, RemoteControlControllerGrants};
 use personal_rns::remote_control::{
     RemoteControlInitialControllerGrants, RemoteControlSelfAnnouncement, RemoteControlService,
@@ -51,7 +56,8 @@ use super::entropy::install_hal_runtime_entropy;
     feature = "board-t114",
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 ))]
 use super::entropy::install_softdevice_runtime_entropy;
 #[cfg(any(
@@ -60,7 +66,8 @@ use super::entropy::install_softdevice_runtime_entropy;
     feature = "board-t114",
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 ))]
 use super::entropy::prepare_softdevice_runtime_entropy;
 use super::entropy::{runtime_entropy, seed_from_hal};
@@ -71,7 +78,8 @@ use super::entropy::{runtime_entropy, seed_from_hal};
     feature = "board-t114",
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 ))]
 mod bluetooth;
 #[cfg(any(
@@ -84,14 +92,16 @@ mod remote_control;
     feature = "board-t1000e",
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 ))]
 #[path = "remote_control_headless.rs"]
 mod remote_control;
 #[cfg(any(
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 ))]
 #[path = "button_announce.rs"]
 mod selected;
@@ -126,7 +136,8 @@ const USB_OUTBOUND_DEPTH: usize = 2;
     feature = "board-t114",
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 ))]
 const BLE_OUTBOUND_DEPTH: usize = Storage::MAX_OUTGOING_RESOURCE_REACTION_FRAMES;
 const NOTIFY_CAP: usize = minimum_manifold_notification_capacity(LANE_COUNT, LANE_DEPTH);
@@ -148,7 +159,8 @@ const PACKET_PHY_INDEX_BUCKETS: usize =
     feature = "board-t114",
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 ))]
 const _: () = assert!(Storage::LINK_SESSIONS > bluetooth::MEMBERS);
 
@@ -205,7 +217,8 @@ static LORA_MANIFOLD_LANE: StaticManifoldLane<
     feature = "board-t114",
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
-    feature = "board-rak4631"
+    feature = "board-rak4631",
+    feature = "board-xiao-nrf52840"
 ))]
 static BLE_MANIFOLD_LANE: StaticManifoldLane<
     Mtx,
@@ -243,7 +256,11 @@ pub async fn run(spawner: Spawner) -> ! {
             (node_bootstrap, remote_control_bootstrap, entropy)
         })
         .await;
-    #[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
+    #[cfg(any(
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840",
+        feature = "board-wio-tracker-l1"
+    ))]
     let mut factory_grant = None;
     #[cfg(any(
         feature = "board-t096",
@@ -251,7 +268,8 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-t114",
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     let ((node_bootstrap, remote_control_bootstrap, ble_bootstrap, entropy), hardware) =
         Board::initialize(|nvmc, rng| {
@@ -260,7 +278,11 @@ pub async fn run(spawner: Spawner) -> ! {
             let remote_control_bootstrap = board::REMOTE_CONTROL_IDENTITY_FLASH
                 .load_or_generate(nvmc, &mut entropy)
                 .expect("RemoteControl identity bootstrap failed");
-            #[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
+            #[cfg(any(
+                feature = "board-rak4631",
+                feature = "board-xiao-nrf52840",
+                feature = "board-wio-tracker-l1"
+            ))]
             {
                 factory_grant = board::REMOTE_CONTROL_IDENTITY_FLASH.factory_grant(nvmc);
             }
@@ -289,7 +311,8 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-t114",
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     let ble_identity = Some(ble_bootstrap.into_identity());
     #[cfg(any(feature = "board-t096", feature = "board-wio-tracker-l1"))]
@@ -326,7 +349,8 @@ pub async fn run(spawner: Spawner) -> ! {
     #[cfg(any(
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     let Hardware {
         usb: usb_driver,
@@ -371,7 +395,8 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-t114",
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     let entropy = prepare_softdevice_runtime_entropy(entropy);
     #[cfg(any(
@@ -380,13 +405,14 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-t114",
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     let sd = bluetooth::enable(spawner, vbus, ble_identity);
     // The SoftDevice task and GATT workers are spawned above, but they cannot run until this
     // executor task yields. RAK4631 reaches this point without an intervening asynchronous flash
     // load, so settle S140 before consuming its entropy/flash services or starting USB.
-    #[cfg(feature = "board-rak4631")]
+    #[cfg(any(feature = "board-rak4631", feature = "board-xiao-nrf52840"))]
     Timer::after_millis(100).await;
     #[cfg(any(
         feature = "board-t096",
@@ -394,7 +420,8 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-t114",
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     install_softdevice_runtime_entropy(entropy, sd);
 
@@ -404,7 +431,8 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-t114",
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     let shared_flash = super::learned_state::take_flash(sd);
     #[cfg(feature = "board-t1000e")]
@@ -423,7 +451,11 @@ pub async fn run(spawner: Spawner) -> ! {
     node_name::set_destinations(destination_hashes);
     let node_page_destination = destination_hashes.node_page;
     let self_announcement = RemoteControlSelfAnnouncement::Destination(node_page_destination);
-    #[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
+    #[cfg(any(
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840",
+        feature = "board-wio-tracker-l1"
+    ))]
     let initial_controller_grants = match factory_grant {
         Some(grant) => {
             static FACTORY_GRANTS: StaticCell<[RemoteControlControllerGrant; 1]> =
@@ -436,7 +468,11 @@ pub async fn run(spawner: Spawner) -> ! {
         }
         None => RemoteControlInitialControllerGrants::Nobody,
     };
-    #[cfg(not(any(feature = "board-rak4631", feature = "board-wio-tracker-l1")))]
+    #[cfg(not(any(
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840",
+        feature = "board-wio-tracker-l1"
+    )))]
     let initial_controller_grants = RemoteControlInitialControllerGrants::Nobody;
     let remote_control = RemoteControlService::with_capabilities(
         remote_control_identity_secrets,
@@ -457,14 +493,15 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-wio-tracker-l1"
     ))]
     let subg_configuration = loaded_subg_configuration.state;
-    #[cfg(feature = "board-rak4631")]
+    #[cfg(any(feature = "board-rak4631", feature = "board-xiao-nrf52840"))]
     let (subg_configuration_store, subg_configuration) =
         remote_control::load_subg_configuration(shared_flash).await;
     #[cfg(not(any(
         feature = "board-t096",
         feature = "board-t114",
         feature = "board-wio-tracker-l1",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     )))]
     let subg_configuration = SubGConfigurationState::Unconfigured;
     #[cfg(any(
@@ -522,7 +559,8 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-t114",
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     let ble_supervisor_lane = ble_identity.as_ref().map(|_| {
         manifold_lanes
@@ -581,11 +619,12 @@ pub async fn run(spawner: Spawner) -> ! {
         feature = "board-t114",
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     let bluetooth = bluetooth::prepare(ble_identity, ble_supervisor_lane);
     let heartbeat = async move {
-        #[cfg(feature = "board-rak4631")]
+        #[cfg(any(feature = "board-rak4631", feature = "board-xiao-nrf52840"))]
         status_led.boot_splash().await;
         loop {
             status_led.illuminate();
@@ -668,7 +707,8 @@ pub async fn run(spawner: Spawner) -> ! {
     #[cfg(any(
         feature = "board-mesh-tower-v2",
         feature = "board-muzi-base-duo",
-        feature = "board-rak4631"
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840"
     ))]
     selected::run(
         io,

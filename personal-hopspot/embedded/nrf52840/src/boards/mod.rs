@@ -13,6 +13,7 @@ use prns_core::entropy::{EntropySource, RuntimeEntropy};
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
     feature = "board-rak4631",
+    feature = "board-xiao-nrf52840",
     feature = "board-wio-tracker-l1"
 ))]
 mod status_led;
@@ -49,7 +50,7 @@ pub(crate) struct RemoteControlIdentityFlash {
 }
 
 impl RemoteControlIdentityFlash {
-    #[cfg(not(feature = "board-rak4631"))]
+    #[cfg(not(any(feature = "board-rak4631", feature = "board-xiao-nrf52840")))]
     pub(crate) const fn at(offset: u32) -> Self {
         Self { offset }
     }
@@ -57,7 +58,7 @@ impl RemoteControlIdentityFlash {
     /// Use when a recovery UF2 replaces an application without erasing the page newly assigned to
     /// the Remote Control identity vault. This recovers only a structurally corrupt load; storage,
     /// verification, and identity-pair failures remain fatal and preserve the page for diagnosis.
-    #[cfg(feature = "board-rak4631")]
+    #[cfg(any(feature = "board-rak4631", feature = "board-xiao-nrf52840"))]
     pub(crate) const fn at_with_stale_application_page_recovery(offset: u32) -> Self {
         Self { offset }
     }
@@ -72,7 +73,7 @@ impl RemoteControlIdentityFlash {
         let bootstrap = RemoteControlNodeIdentityBootstrap::load_or_generate_with_runtime_entropy(
             &mut vault, entropy,
         );
-        #[cfg(feature = "board-rak4631")]
+        #[cfg(any(feature = "board-rak4631", feature = "board-xiao-nrf52840"))]
         if matches!(
             bootstrap,
             Err(RemoteControlNodeIdentityBootstrapError::ControllerLoad(
@@ -93,7 +94,11 @@ impl RemoteControlIdentityFlash {
 
     /// The owner grant a provisioning UF2 wrote beside the target identity, if any. A screenless
     /// board has no pairing surface, so this is how its first Administrator is installed.
-    #[cfg(any(feature = "board-rak4631", feature = "board-wio-tracker-l1"))]
+    #[cfg(any(
+        feature = "board-rak4631",
+        feature = "board-xiao-nrf52840",
+        feature = "board-wio-tracker-l1"
+    ))]
     pub(crate) fn factory_grant(
         &self,
         nvmc: &mut Nvmc<'_>,
@@ -123,6 +128,8 @@ pub(crate) mod t114;
 pub(crate) mod t_echo;
 #[cfg(feature = "board-wio-tracker-l1")]
 pub(crate) mod wio_tracker_l1;
+#[cfg(feature = "board-xiao-nrf52840")]
+pub(crate) mod xiao_nrf52840;
 
 #[cfg(all(
     feature = "board-mesh-pocket",
@@ -133,6 +140,7 @@ pub(crate) mod wio_tracker_l1;
     not(feature = "board-mesh-tower-v2"),
     not(feature = "board-muzi-base-duo"),
     not(feature = "board-rak4631"),
+    not(feature = "board-xiao-nrf52840"),
     not(feature = "board-wio-tracker-l1")
 ))]
 pub(crate) use mesh_pocket as selected;
@@ -146,6 +154,7 @@ pub(crate) use mesh_pocket as selected;
     not(feature = "board-t1000e"),
     not(feature = "board-muzi-base-duo"),
     not(feature = "board-rak4631"),
+    not(feature = "board-xiao-nrf52840"),
     not(feature = "board-wio-tracker-l1")
 ))]
 pub(crate) use mesh_tower_v2 as selected;
@@ -158,6 +167,7 @@ pub(crate) use mesh_tower_v2 as selected;
     not(feature = "board-t1000e"),
     not(feature = "board-mesh-tower-v2"),
     not(feature = "board-rak4631"),
+    not(feature = "board-xiao-nrf52840"),
     not(feature = "board-wio-tracker-l1")
 ))]
 pub(crate) use muzi_base_duo as selected;
@@ -170,7 +180,8 @@ pub(crate) use muzi_base_duo as selected;
     not(feature = "board-t1000e"),
     not(feature = "board-mesh-tower-v2"),
     not(feature = "board-muzi-base-duo"),
-    not(feature = "board-wio-tracker-l1")
+    not(feature = "board-wio-tracker-l1"),
+    not(feature = "board-xiao-nrf52840")
 ))]
 pub(crate) use rak4631 as selected;
 #[cfg(all(
@@ -182,6 +193,7 @@ pub(crate) use rak4631 as selected;
     not(feature = "board-mesh-tower-v2"),
     not(feature = "board-muzi-base-duo"),
     not(feature = "board-rak4631"),
+    not(feature = "board-xiao-nrf52840"),
     not(feature = "board-wio-tracker-l1")
 ))]
 #[allow(unused_imports)] // Reserved for the runtime once the bring-up boundary is cleared.
@@ -195,6 +207,7 @@ pub(crate) use t096 as selected;
     not(feature = "board-mesh-tower-v2"),
     not(feature = "board-muzi-base-duo"),
     not(feature = "board-rak4631"),
+    not(feature = "board-xiao-nrf52840"),
     not(feature = "board-wio-tracker-l1")
 ))]
 pub(crate) use t1000e as selected;
@@ -207,6 +220,7 @@ pub(crate) use t1000e as selected;
     not(feature = "board-mesh-tower-v2"),
     not(feature = "board-muzi-base-duo"),
     not(feature = "board-rak4631"),
+    not(feature = "board-xiao-nrf52840"),
     not(feature = "board-wio-tracker-l1")
 ))]
 pub(crate) use t114 as selected;
@@ -219,6 +233,7 @@ pub(crate) use t114 as selected;
     not(feature = "board-mesh-tower-v2"),
     not(feature = "board-muzi-base-duo"),
     not(feature = "board-rak4631"),
+    not(feature = "board-xiao-nrf52840"),
     not(feature = "board-wio-tracker-l1")
 ))]
 pub(crate) use t_echo as selected;
@@ -231,6 +246,20 @@ pub(crate) use t_echo as selected;
     not(feature = "board-t1000e"),
     not(feature = "board-mesh-tower-v2"),
     not(feature = "board-muzi-base-duo"),
-    not(feature = "board-rak4631")
+    not(feature = "board-rak4631"),
+    not(feature = "board-xiao-nrf52840")
 ))]
 pub(crate) use wio_tracker_l1 as selected;
+#[cfg(all(
+    feature = "board-xiao-nrf52840",
+    not(feature = "board-t-echo"),
+    not(feature = "board-t096"),
+    not(feature = "board-t114"),
+    not(feature = "board-mesh-pocket"),
+    not(feature = "board-t1000e"),
+    not(feature = "board-mesh-tower-v2"),
+    not(feature = "board-muzi-base-duo"),
+    not(feature = "board-wio-tracker-l1"),
+    not(feature = "board-rak4631")
+))]
+pub(crate) use xiao_nrf52840 as selected;

@@ -9,10 +9,11 @@
     feature = "board-mesh-tower-v2",
     feature = "board-muzi-base-duo",
     feature = "board-rak4631",
+    feature = "board-xiao-nrf52840",
     feature = "board-wio-tracker-l1"
 )))]
 compile_error!(
-    "select exactly one nRF52840 board feature; available: board-t-echo, board-t096, board-t114, board-mesh-pocket, board-t1000e, board-mesh-tower-v2, board-muzi-base-duo, board-rak4631, board-wio-tracker-l1"
+    "select exactly one nRF52840 board feature; available: board-t-echo, board-t096, board-t114, board-mesh-pocket, board-t1000e, board-mesh-tower-v2, board-muzi-base-duo, board-rak4631, board-wio-tracker-l1, board-xiao-nrf52840"
 );
 
 #[cfg(any(
@@ -51,7 +52,16 @@ compile_error!(
     all(feature = "board-t1000e", feature = "board-wio-tracker-l1"),
     all(feature = "board-mesh-tower-v2", feature = "board-wio-tracker-l1"),
     all(feature = "board-muzi-base-duo", feature = "board-wio-tracker-l1"),
-    all(feature = "board-rak4631", feature = "board-wio-tracker-l1")
+    all(feature = "board-rak4631", feature = "board-wio-tracker-l1"),
+    all(feature = "board-t-echo", feature = "board-xiao-nrf52840"),
+    all(feature = "board-t096", feature = "board-xiao-nrf52840"),
+    all(feature = "board-t114", feature = "board-xiao-nrf52840"),
+    all(feature = "board-mesh-pocket", feature = "board-xiao-nrf52840"),
+    all(feature = "board-t1000e", feature = "board-xiao-nrf52840"),
+    all(feature = "board-mesh-tower-v2", feature = "board-xiao-nrf52840"),
+    all(feature = "board-muzi-base-duo", feature = "board-xiao-nrf52840"),
+    all(feature = "board-rak4631", feature = "board-xiao-nrf52840"),
+    all(feature = "board-wio-tracker-l1", feature = "board-xiao-nrf52840")
 ))]
 compile_error!("nRF52840 board features are mutually exclusive");
 
@@ -87,6 +97,12 @@ compile_error!("RAK4631 requires softdevice-s140-v6; its UF2 bootloader ships S1
 
 #[cfg(all(feature = "board-rak4631", feature = "softdevice-s140-v7"))]
 compile_error!("RAK4631 does not support S140 7.x");
+
+#[cfg(all(feature = "board-xiao-nrf52840", not(feature = "softdevice-s140-v7")))]
+compile_error!("XIAO nRF52840 requires softdevice-s140-v7; its UF2 bootloader ships S140 7.3.0");
+
+#[cfg(all(feature = "board-xiao-nrf52840", feature = "softdevice-s140-v6"))]
+compile_error!("XIAO nRF52840 does not support S140 6.x");
 
 #[cfg(all(feature = "board-t096", feature = "softdevice-s140-v7"))]
 compile_error!("T096 does not support S140 7.x");
@@ -162,6 +178,7 @@ mod retained_display;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -173,6 +190,7 @@ mod retained_display;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -184,6 +202,7 @@ mod retained_display;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -195,6 +214,7 @@ mod retained_display;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -206,6 +226,7 @@ mod retained_display;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -217,6 +238,7 @@ mod retained_display;
         not(feature = "board-t1000e"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -228,10 +250,11 @@ mod retained_display;
         not(feature = "board-t1000e"),
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
-        feature = "board-rak4631",
+        any(feature = "board-rak4631", feature = "board-xiao-nrf52840"),
         not(feature = "board-t-echo"),
         not(feature = "board-t096"),
         not(feature = "board-t114"),
@@ -250,7 +273,8 @@ mod retained_display;
         not(feature = "board-t1000e"),
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
-        not(feature = "board-rak4631")
+        not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840")
     )
 ))]
 mod runtime;
@@ -266,6 +290,7 @@ mod storage;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -277,6 +302,7 @@ mod storage;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -288,6 +314,7 @@ mod storage;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -299,6 +326,7 @@ mod storage;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -310,6 +338,7 @@ mod storage;
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -321,6 +350,7 @@ mod storage;
         not(feature = "board-t1000e"),
         not(feature = "board-muzi-base-duo"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
@@ -332,10 +362,11 @@ mod storage;
         not(feature = "board-t1000e"),
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840"),
         not(feature = "board-wio-tracker-l1")
     ),
     all(
-        feature = "board-rak4631",
+        any(feature = "board-rak4631", feature = "board-xiao-nrf52840"),
         not(feature = "board-t-echo"),
         not(feature = "board-t096"),
         not(feature = "board-t114"),
@@ -354,7 +385,8 @@ mod storage;
         not(feature = "board-t1000e"),
         not(feature = "board-mesh-tower-v2"),
         not(feature = "board-muzi-base-duo"),
-        not(feature = "board-rak4631")
+        not(feature = "board-rak4631"),
+        not(feature = "board-xiao-nrf52840")
     )
 ))]
 pub use runtime::run;

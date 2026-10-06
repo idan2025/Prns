@@ -625,7 +625,19 @@ pub const WIO_TRACKER_L1: MemoryProfile = MemoryProfile {
     runtime_reservations: &NRF_RUNTIME_RESERVATIONS,
 };
 
-const NRF52840_MEMORY_X_PROFILES: [MemoryProfileId; 11] = [
+/// Seeed's XIAO nRF52840 carries the same Adafruit UF2 bootloader 0.6.x and S140 7.3.0 as the Wio
+/// Tracker L1, and the same Meshtastic InternalFS at 0xED000..0xF4000, so it shares that map.
+pub const XIAO_NRF52840: MemoryProfile = MemoryProfile {
+    id: MemoryProfileId("xiao-nrf52840"),
+    architecture: ProcessorArchitecture::ThumbV7em,
+    address_spaces: &NRF52840_S140_RAM_SPACES,
+    regions: &WIO_TRACKER_L1_REGIONS,
+    firmware: firmware_placement(0x27000, 0xE1000, 0xE1000),
+    journals: &HELTEC_DISPLAY_JOURNALS,
+    runtime_reservations: &NRF_RUNTIME_RESERVATIONS,
+};
+
+const NRF52840_MEMORY_X_PROFILES: [MemoryProfileId; 12] = [
     T_ECHO_S140_V6.id,
     T_ECHO_S140_V7.id,
     T096.id,
@@ -637,6 +649,7 @@ const NRF52840_MEMORY_X_PROFILES: [MemoryProfileId; 11] = [
     MUZI_BASE_DUO.id,
     RAK4631.id,
     WIO_TRACKER_L1.id,
+    XIAO_NRF52840.id,
 ];
 
 pub const NRF52840_MEMORY_X_BINDING: NrfMemoryXBinding = NrfMemoryXBinding {
