@@ -1,7 +1,7 @@
 //! The self-announce of a board with no button and no screen. Display boards announce from a
 //! menu action and the MeshTower from its button; without this the T1000-E, the Solar Node and a
-//! XIAO without a fitted button relay traffic but no peer ever learns they exist. The XIAO and the
-//! Wio Tracker L1 also announce to each Bluetooth peer that connects, so a board coming into
+//! XIAO without a fitted button relay traffic but no peer ever learns they exist; a RAK4631 in a
+//! closed enclosure is in the same position. The XIAO, the RAK4631 and the Wio Tracker L1 also announce to each Bluetooth peer that connects, so a board coming into
 //! range learns them without waiting for the schedule or a menu action.
 
 use core::future::Future;
@@ -16,7 +16,8 @@ use super::{PrnsNodeHandle, COMMANDS, COMPLETION};
 #[cfg(any(
     feature = "board-t1000e",
     feature = "board-sensecap-solar-node",
-    feature = "board-xiao-nrf52840"
+    feature = "board-xiao-nrf52840",
+    feature = "board-rak4631"
 ))]
 pub(super) fn announce_forever(node_page_destination: DestinationHash) -> impl Future<Output = ()> {
     use personal_hopspot_core::headless_announce::headless_announce_delay_ms;
@@ -46,13 +47,21 @@ pub(super) fn announce_forever(node_page_destination: DestinationHash) -> impl F
 
 /// A peer must stay connected for two consecutive polls before it is announced to, so a link
 /// that drops during setup does not cost an announce.
-#[cfg(any(feature = "board-xiao-nrf52840", feature = "board-wio-tracker-l1"))]
+#[cfg(any(
+    feature = "board-xiao-nrf52840",
+    feature = "board-rak4631",
+    feature = "board-wio-tracker-l1"
+))]
 const BLUETOOTH_PEER_POLL: Duration = Duration::from_secs(2);
 
 /// Announces `node_page_destination` to each Bluetooth peer once it has settled, so a board that
 /// comes into range learns this node without waiting for the six-hour schedule. Only that peer's
 /// interface is addressed, so peers coming and going do not cost LoRa airtime.
-#[cfg(any(feature = "board-xiao-nrf52840", feature = "board-wio-tracker-l1"))]
+#[cfg(any(
+    feature = "board-xiao-nrf52840",
+    feature = "board-rak4631",
+    feature = "board-wio-tracker-l1"
+))]
 pub(super) fn announce_to_new_bluetooth_peers(
     node_page_destination: DestinationHash,
 ) -> impl Future<Output = ()> {

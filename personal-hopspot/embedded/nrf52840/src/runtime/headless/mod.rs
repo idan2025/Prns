@@ -799,6 +799,7 @@ fn ignore_events(_event: PrnsEvent<'_>, _state: &AppState) {}
     feature = "board-t1000e",
     feature = "board-sensecap-solar-node",
     feature = "board-xiao-nrf52840",
+    feature = "board-rak4631",
     feature = "board-wio-tracker-l1"
 ))]
 mod node_page_announce;

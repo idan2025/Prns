@@ -52,10 +52,10 @@ where
             }
         }
     };
-    // The XIAO usually has no button fitted, so it also announces on the headless schedule and
-    // to each Bluetooth peer that connects; otherwise no peer would learn it exists until a
-    // controller asked it to announce.
-    #[cfg(feature = "board-xiao-nrf52840")]
+    // The XIAO usually has no button fitted, and a RAK4631 is often sealed in an enclosure, so
+    // both also announce on the headless schedule and to each Bluetooth peer that connects;
+    // otherwise no peer would learn they exist until a controller asked them to announce.
+    #[cfg(any(feature = "board-xiao-nrf52840", feature = "board-rak4631"))]
     let announce = join3(
         announce,
         super::node_page_announce::announce_forever(node_page_destination),
