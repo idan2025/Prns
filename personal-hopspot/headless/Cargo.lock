@@ -1371,6 +1371,7 @@ dependencies = [
  "clap",
  "futures-util",
  "hex",
+ "nusb",
  "personal-hopspot-core",
  "personal-hopspot-memory",
  "personal-rns",

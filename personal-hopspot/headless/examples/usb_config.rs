@@ -2,8 +2,11 @@
 //!
 //! `provision` merges the firmware UF2 with a Remote Control vault page that installs this
 //! controller as the target's factory Administrator, so one drag-and-drop both flashes the board
-//! and makes it trust this machine. Every other command connects over USB Auto, authenticates as
-//! that controller, and performs one typed operation.
+//! and makes it trust this machine; with `--flash` it also restarts the board into its bootloader
+//! and copies the image itself. `flash` updates the firmware the same way and keeps the board's
+//! identity, owner, name and LoRa settings. Every other command connects over USB Auto,
+//! authenticates as that controller, and performs one typed operation; `set` changes single
+//! settings live, without reflashing.
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -50,6 +53,17 @@ const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long to keep asking for a path over the board's own USB connection before accepting one
 /// relayed through another attached board.
 const DIRECT_PATH_WAIT: Duration = Duration::from_secs(30);
+/// USB identity of a running Hopspot (prns-core `WEBUSB_VENDOR_ID` / `WEBUSB_PRODUCT_ID`).
+const HOPSPOT_USB_VENDOR: u16 = 0x1209;
+const HOPSPOT_USB_PRODUCT: u16 = 0x0001;
+/// The vendor request a running Hopspot answers by restarting into its UF2 bootloader
+/// (prns-core `BOOTLOADER_ENTRY_CONTROL_*`), so flashing needs no button presses.
+const BOOTLOADER_ENTRY_REQUEST: u8 = 0x50;
+const BOOTLOADER_ENTRY_VALUE: u16 = 0x5052;
+const BOOTLOADER_ENTRY_INDEX: u16 = 0x4e53;
+/// How long to wait for the bootloader drive, and then for the flashed board to come back.
+const DRIVE_WAIT: Duration = Duration::from_secs(90);
+const REBOOT_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Parser)]
 struct Options {
@@ -75,9 +89,24 @@ enum Command {
         #[arg(long)]
         firmware: PathBuf,
         /// Combined UF2 to write. It contains the board's private Remote Control key.
+        #[arg(long, required_unless_present = "flash")]
+        out: Option<PathBuf>,
+        /// Restart the board into its bootloader and copy the image onto it (deleting the
+        /// combined UF2 afterwards). A board not yet running Hopspot needs a double-press of RESET.
         #[arg(long)]
-        out: PathBuf,
+        flash: bool,
     },
+    /// Update the firmware and keep the board's identity, owner, name and LoRa settings: restarts
+    /// the board into its bootloader and copies the UF2 onto it.
+    Flash {
+        /// Firmware UF2 from `tools/build/hopspot-nrf52840.sh BOARD`.
+        uf2: PathBuf,
+    },
+    /// Change one or more settings live; anything left out keeps its current value.
+    ///
+    /// Example: `set --tx-power-dbm 22`, `set --region EU868`, `set --name Box-Hopspot`.
+    /// A new region without `--frequency-mhz` starts from that region's default LoRa profile.
+    Set(SetArgs),
     /// Build version, interfaces, and the LoRa configuration.
     Status,
     /// Set and persist the LoRa profile.
@@ -99,17 +128,17 @@ enum Command {
         #[arg(long, default_value_t = 18)]
         preamble: u16,
     },
-    /// Turn one interface on or off (IDs come from `status`).
+    /// Turn one interface on or off: `lora`, `bluetooth`, `usb`, or an ID from `status`.
     Interface {
-        #[arg(value_parser = interface_id)]
-        id: InterfaceId,
+        #[arg(value_parser = interface_ref)]
+        id: InterfaceRef,
         #[arg(value_enum)]
         power: Power,
     },
-    /// List the peers one interface currently sees (IDs come from `status`).
+    /// List the peers one interface currently sees: `lora`, `bluetooth`, `usb`, or an ID from `status`.
     Peers {
-        #[arg(value_parser = interface_id)]
-        id: InterfaceId,
+        #[arg(value_parser = interface_ref)]
+        id: InterfaceRef,
     },
     /// Put the whole node to sleep or wake it.
     System {
@@ -136,6 +165,146 @@ enum Command {
     },
 }
 
+#[derive(clap::Args)]
+struct SetArgs {
+    /// Announced name.
+    #[arg(long)]
+    name: Option<String>,
+    /// Regulatory region label, e.g. US915, EU868; `Custom` skips regional limits.
+    #[arg(long)]
+    region: Option<String>,
+    /// Center frequency in MHz, e.g. 918.3.
+    #[arg(long)]
+    frequency_mhz: Option<f64>,
+    #[arg(long, value_parser = ["125", "250", "500"])]
+    bandwidth_khz: Option<String>,
+    #[arg(long, value_parser = clap::value_parser!(u8).range(5..=12))]
+    spreading_factor: Option<u8>,
+    /// Coding-rate denominator: 5 for 4/5 through 8 for 4/8.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(5..=8))]
+    coding_rate: Option<u8>,
+    #[arg(long)]
+    tx_power_dbm: Option<i8>,
+    #[arg(long)]
+    preamble: Option<u16>,
+}
+
+impl SetArgs {
+    fn changes_lora(&self) -> bool {
+        self.region.is_some()
+            || self.frequency_mhz.is_some()
+            || self.bandwidth_khz.is_some()
+            || self.spreading_factor.is_some()
+            || self.coding_rate.is_some()
+            || self.tx_power_dbm.is_some()
+            || self.preamble.is_some()
+    }
+}
+
+/// A LoRa profile's fields, in the units the `lora` command takes.
+#[derive(Clone)]
+struct LoraSettings {
+    region: String,
+    frequency_hz: u32,
+    bandwidth_khz: String,
+    spreading_factor: u8,
+    coding_rate: u8,
+    tx_power_dbm: i8,
+    preamble: u16,
+}
+
+impl LoraSettings {
+    fn of(profile: personal_rns::interfaces::lora::RadioProfile) -> Self {
+        use personal_rns::interfaces::lora::Modulation;
+        use personal_rns::interfaces::subghz::SubGRegion;
+        let Modulation::Lora {
+            spreading_factor,
+            bandwidth,
+            coding_rate,
+        } = profile.modulation();
+        Self {
+            region: match profile.region() {
+                SubGRegion::Regulated(region) => region.label().to_owned(),
+                SubGRegion::Custom => "Custom".to_owned(),
+            },
+            frequency_hz: profile.frequency().hz(),
+            bandwidth_khz: (bandwidth.hz() / 1_000).to_string(),
+            spreading_factor: spreading_factor as u8,
+            coding_rate: coding_rate.denominator(),
+            tx_power_dbm: profile.tx_power().dbm(),
+            preamble: profile.preamble().count(),
+        }
+    }
+
+    /// The region's built-in LoRa profile, the starting point when only the region changes.
+    fn region_default(label: &str) -> Result<Self, Error> {
+        use personal_rns::interfaces::subghz::{ResolvedSubGMode, SubGConfiguration, SubGRegion};
+        let region = if label.eq_ignore_ascii_case("custom") {
+            return Err(Error::Invalid(
+                "a Custom region needs --frequency-mhz and the other LoRa settings".into(),
+            ));
+        } else {
+            let label = region_label(label)?;
+            RegulatoryRegion::ALL
+                .into_iter()
+                .find(|region| region.label() == label)
+                .map(SubGRegion::Regulated)
+                .ok_or(Error::Profile)?
+        };
+        let configuration = SubGConfiguration::auto_lora_for(region).map_err(|_| {
+            Error::Invalid(format!(
+                "{label} has no built-in LoRa default; pass --frequency-mhz too (and any other setting that should change)"
+            ))
+        })?;
+        let ResolvedSubGMode::LoRa(profile) = configuration.resolve();
+        Ok(Self::of(profile))
+    }
+
+    fn with(mut self, change: &SetArgs) -> Result<Self, Error> {
+        if let Some(region) = &change.region {
+            if change.frequency_mhz.is_none() && !region.eq_ignore_ascii_case(&self.region) {
+                self = Self::region_default(region)?;
+            }
+            self.region = region.clone();
+        }
+        if let Some(mhz) = change.frequency_mhz {
+            if !(mhz.is_finite() && (100.0..=3_000.0).contains(&mhz)) {
+                return Err(Error::Invalid(format!("{mhz} MHz is not a LoRa frequency")));
+            }
+            self.frequency_hz = (mhz * 1_000_000.0).round() as u32;
+        }
+        if let Some(bandwidth) = &change.bandwidth_khz {
+            self.bandwidth_khz = bandwidth.clone();
+        }
+        self.spreading_factor = change.spreading_factor.unwrap_or(self.spreading_factor);
+        self.coding_rate = change.coding_rate.unwrap_or(self.coding_rate);
+        self.tx_power_dbm = change.tx_power_dbm.unwrap_or(self.tx_power_dbm);
+        self.preamble = change.preamble.unwrap_or(self.preamble);
+        Ok(self)
+    }
+
+    fn profile(&self) -> Result<RemoteControlLoRaProfile, Error> {
+        lora_profile(
+            &self.region,
+            self.frequency_hz,
+            &self.bandwidth_khz,
+            self.spreading_factor,
+            self.coding_rate,
+            self.tx_power_dbm,
+            self.preamble,
+        )
+    }
+
+    fn json(&self) -> serde_json::Value {
+        json!({
+            "region": self.region, "frequency_mhz": f64::from(self.frequency_hz) / 1_000_000.0,
+            "bandwidth_khz": self.bandwidth_khz, "spreading_factor": self.spreading_factor,
+            "coding_rate": format!("4/{}", self.coding_rate), "tx_power_dbm": self.tx_power_dbm,
+            "preamble": self.preamble,
+        })
+    }
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Power {
     On,
@@ -153,6 +322,24 @@ fn default_state_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".config/prns-usb-config")
+}
+
+/// An interface named by kind or by its ID from `status`.
+#[derive(Clone)]
+enum InterfaceRef {
+    Id(InterfaceId),
+    Kind(&'static str),
+}
+
+fn interface_ref(value: &str) -> Result<InterfaceRef, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "lora" => Ok(InterfaceRef::Kind("LoRa")),
+        "bluetooth" | "ble" => Ok(InterfaceRef::Kind("Bluetooth")),
+        "usb" => Ok(InterfaceRef::Kind("UsbAuto")),
+        _ => interface_id(value)
+            .map(InterfaceRef::Id)
+            .map_err(|error| format!("{error}; or use lora, bluetooth or usb")),
+    }
 }
 
 fn interface_id(value: &str) -> Result<InterfaceId, String> {
@@ -193,6 +380,12 @@ enum Error {
     Operation(personal_rns::runtime::RemoteControlTargetOperationError),
     #[error("board did not answer within {OPERATION_TIMEOUT:?} at stage: {0}")]
     Timeout(&'static str),
+    #[error("{0}")]
+    NotFound(String),
+    #[error("{0}")]
+    Invalid(String),
+    #[error("USB: {0}")]
+    Usb(String),
     #[error("remote inventory exceeded 256 pages")]
     Pagination,
     #[error("controller node stopped: {0:?}")]
@@ -306,7 +499,13 @@ fn lock_state(state_dir: &Path) -> Result<std::fs::File, Error> {
     Ok(lock)
 }
 
-fn provision(options: &Options, board: &str, firmware: &Path, out: &Path) -> Result<(), Error> {
+fn provision(
+    options: &Options,
+    board: &str,
+    firmware: &Path,
+    out: Option<&Path>,
+    flash: bool,
+) -> Result<(), Error> {
     let address = remote_control_identity_address(board)?;
     let (secrets, _) = RemoteControlIdentityDirectory::new(options.state_dir.join("identity"))
         .load_or_generate()?
@@ -318,7 +517,11 @@ fn provision(options: &Options, board: &str, firmware: &Path, out: &Path) -> Res
     let page = encode_remote_control_vault_page(&target_secret, controller)
         .map_err(|error| Error::Uf2(format!("vault page: {error:?}")))?;
     let merged = merge_uf2(&std::fs::read(firmware)?, address, &page)?;
-    write_private(out, &merged)?;
+    let out = match out {
+        Some(out) => out.to_path_buf(),
+        None => options.state_dir.join("provision.uf2"),
+    };
+    write_private(&out, &merged)?;
     let record = json!({
         "board": board,
         "target_public_key": hex::encode(target_public.as_bytes()),
@@ -335,9 +538,192 @@ fn provision(options: &Options, board: &str, firmware: &Path, out: &Path) -> Res
             "uf2": out,
             "target_hash": hex::encode(target_public.identity_hash().as_bytes()),
             "controller_hash": hex::encode(identities.controller().identity_hash().as_bytes()),
-            "note": "copy the UF2 to the board's bootloader drive, then delete it: it holds the board's private key",
+            "note": if flash {
+                "flashing it now"
+            } else {
+                "copy the UF2 to the board's bootloader drive, then delete it: it holds the board's private key"
+            },
         })
     );
+    if flash {
+        let flashed = flash_uf2(&out);
+        // The combined image holds the board's private key; it is never needed again.
+        let _ = std::fs::remove_file(&out);
+        flashed?;
+    }
+    Ok(())
+}
+
+/// Ask every running Hopspot on USB to restart into its UF2 bootloader; returns how many were asked.
+fn restart_into_bootloader() -> Result<usize, Error> {
+    use nusb::transfer::{ControlOut, ControlType, Recipient};
+    use nusb::MaybeFuture;
+    let boards: Vec<_> = nusb::list_devices()
+        .wait()
+        .map_err(|error| Error::Usb(error.to_string()))?
+        .filter(|device| {
+            device.vendor_id() == HOPSPOT_USB_VENDOR && device.product_id() == HOPSPOT_USB_PRODUCT
+        })
+        .collect();
+    if boards.len() > 1 {
+        return Err(Error::Usb(format!(
+            "{} Hopspots are plugged in; unplug all but the one to flash",
+            boards.len()
+        )));
+    }
+    for board in &boards {
+        let device = board
+            .open()
+            .wait()
+            .map_err(|error| Error::Usb(format!("open the board: {error}")))?;
+        // The board resets while answering, so a transfer error here is expected.
+        let _ = device
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request: BOOTLOADER_ENTRY_REQUEST,
+                    value: BOOTLOADER_ENTRY_VALUE,
+                    index: BOOTLOADER_ENTRY_INDEX,
+                    data: &[],
+                },
+                Duration::from_secs(1),
+            )
+            .wait();
+    }
+    Ok(boards.len())
+}
+
+fn hopspot_on_usb() -> bool {
+    use nusb::MaybeFuture;
+    nusb::list_devices().wait().is_ok_and(|mut devices| {
+        devices.any(|device| {
+            device.vendor_id() == HOPSPOT_USB_VENDOR && device.product_id() == HOPSPOT_USB_PRODUCT
+        })
+    })
+}
+
+/// Mounted UF2 bootloader drives: directories holding `INFO_UF2.TXT`.
+fn uf2_drives() -> Vec<PathBuf> {
+    let user = std::env::var("USER").unwrap_or_default();
+    let roots = [
+        PathBuf::from("/run/media").join(&user),
+        PathBuf::from("/media").join(&user),
+        PathBuf::from("/media"),
+        PathBuf::from("/Volumes"),
+    ];
+    let mut drives: Vec<PathBuf> = roots
+        .iter()
+        .filter_map(|root| std::fs::read_dir(root).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join("INFO_UF2.TXT").is_file())
+        .collect();
+    drives.sort();
+    drives.dedup();
+    drives
+}
+
+/// Linux desktops often leave a new USB drive unmounted; mount unmounted USB block devices with
+/// udisks so the bootloader drive appears. Best effort: does nothing where udisks is missing.
+fn mount_usb_drives() {
+    #[cfg(target_os = "linux")]
+    {
+        let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        let Ok(labels) = std::fs::read_dir("/dev/disk/by-label") else {
+            return;
+        };
+        for entry in labels.filter_map(Result::ok) {
+            let Ok(device) = std::fs::canonicalize(entry.path()) else {
+                continue;
+            };
+            let Some(name) = device.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let on_usb = std::fs::canonicalize(format!("/sys/class/block/{name}"))
+                .is_ok_and(|path| path.to_string_lossy().contains("/usb"));
+            let mounted = mounts
+                .lines()
+                .any(|line| line.split(' ').next() == device.to_str());
+            if on_usb && !mounted {
+                let _ = std::process::Command::new("udisksctl")
+                    .args(["mount", "--no-user-interaction", "-b"])
+                    .arg(&device)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+    }
+}
+
+fn wait_for_uf2_drive() -> Result<PathBuf, Error> {
+    let deadline = std::time::Instant::now() + DRIVE_WAIT;
+    loop {
+        mount_usb_drives();
+        match uf2_drives().as_slice() {
+            [drive] => return Ok(drive.clone()),
+            [] if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(500))
+            }
+            [] => {
+                return Err(Error::Usb(
+                    "no bootloader drive appeared; double-press the board's RESET button and run this again, or copy the UF2 onto the drive yourself".into(),
+                ))
+            }
+            drives => {
+                return Err(Error::Usb(format!(
+                    "several bootloader drives are mounted ({drives:?}); leave only the board to flash"
+                )))
+            }
+        }
+    }
+}
+
+/// Restart the board into its bootloader, copy `uf2` onto its drive and wait for it to boot.
+fn flash_uf2(uf2: &Path) -> Result<(), Error> {
+    let image = std::fs::read(uf2)?;
+    if image.is_empty() || !image.len().is_multiple_of(UF2_BLOCK_BYTES) {
+        return Err(Error::Uf2("not a whole number of 512-byte blocks".into()));
+    }
+    let drive = if let [drive] = uf2_drives().as_slice() {
+        drive.clone()
+    } else {
+        if restart_into_bootloader()? == 0 {
+            eprintln!(
+                "No running Hopspot found on USB. Double-press the board's RESET button to open its bootloader drive."
+            );
+        }
+        wait_for_uf2_drive()?
+    };
+    let model = std::fs::read_to_string(drive.join("INFO_UF2.TXT"))
+        .ok()
+        .and_then(|info| {
+            info.lines()
+                .find_map(|line| line.strip_prefix("Model: ").map(str::to_owned))
+        });
+    println!(
+        "{}",
+        json!({"event":"flashing","drive":drive,"model":model,"bytes":image.len()})
+    );
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(drive.join("hopspot.uf2"))?;
+        file.write_all(&image)?;
+        // The bootloader resets as soon as the last block lands, which can fail the final sync.
+        let _ = file.sync_all();
+    }
+    let deadline = std::time::Instant::now() + REBOOT_WAIT;
+    while !hopspot_on_usb() {
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::Usb(
+                "the image was copied but the board did not come back as a Hopspot; check that the UF2 matches this board".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    println!("{}", json!({"event":"flashed"}));
     Ok(())
 }
 
@@ -353,6 +739,26 @@ fn load_target(options: &Options) -> Result<PublicIdentityMaterial, Error> {
     public_identity(key).map_err(|error| Error::Record(error.to_string()))
 }
 
+/// The canonical label of a regulatory region (case-insensitive), or `Custom`.
+fn region_label(region: &str) -> Result<&'static str, Error> {
+    if region.eq_ignore_ascii_case("custom") {
+        return Ok("Custom");
+    }
+    RegulatoryRegion::ALL
+        .into_iter()
+        .map(RegulatoryRegion::label)
+        .find(|label| label.eq_ignore_ascii_case(region))
+        .ok_or_else(|| {
+            let known = RegulatoryRegion::ALL
+                .into_iter()
+                .map(RegulatoryRegion::label)
+                .chain(["Custom"])
+                .collect::<Vec<_>>()
+                .join(", ");
+            Error::Region(region.to_owned(), known)
+        })
+}
+
 fn lora_profile(
     region: &str,
     frequency_hz: u32,
@@ -362,23 +768,7 @@ fn lora_profile(
     tx_power_dbm: i8,
     preamble: u16,
 ) -> Result<RemoteControlLoRaProfile, Error> {
-    let label = if region.eq_ignore_ascii_case("custom") {
-        "Custom"
-    } else {
-        RegulatoryRegion::ALL
-            .into_iter()
-            .map(RegulatoryRegion::label)
-            .find(|label| label.eq_ignore_ascii_case(region))
-            .ok_or_else(|| {
-                let known = RegulatoryRegion::ALL
-                    .into_iter()
-                    .map(RegulatoryRegion::label)
-                    .chain(["Custom"])
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Error::Region(region.to_owned(), known)
-            })?
-    };
+    let label = region_label(region)?;
     RemoteControlLoRaProfile::parse(&format!(
         "LoRa,{label},{frequency_hz},{spreading_factor},{bandwidth_khz},{coding_rate},{tx_power_dbm},{preamble}"
     ))
@@ -391,9 +781,13 @@ async fn control(options: Options) -> Result<(), Error> {
         board,
         firmware,
         out,
+        flash,
     } = &options.command
     {
-        return provision(&options, board, firmware, out);
+        return provision(&options, board, firmware, out.as_deref(), *flash);
+    }
+    if let Command::Flash { uf2 } = &options.command {
+        return flash_uf2(uf2);
     }
     if let Command::OwnerKey = &options.command {
         let (secrets, _) = RemoteControlIdentityDirectory::new(options.state_dir.join("identity"))
@@ -418,7 +812,10 @@ async fn control(options: Options) -> Result<(), Error> {
         return Ok(());
     }
     let new_name = match &options.command {
-        Command::Name { set: Some(name) } => Some(
+        Command::Name { set: Some(name) }
+        | Command::Set(SetArgs {
+            name: Some(name), ..
+        }) => Some(
             personal_rns::remote_control::RemoteControlNodeName::new(name).ok_or_else(|| {
                 Error::Record("a name is 1 to 32 bytes, without leading or trailing spaces".into())
             })?,
@@ -457,6 +854,17 @@ async fn control(options: Options) -> Result<(), Error> {
         )?),
         _ => None,
     };
+    if let Command::Set(change) = &options.command {
+        if let Some(region) = &change.region {
+            region_label(region)?;
+        }
+        if change.name.is_none() && !change.changes_lora() {
+            return Err(Error::Invalid(
+                "nothing to change; pass a setting such as --tx-power-dbm 22 (see `set --help`)"
+                    .into(),
+            ));
+        }
+    }
     let target_key = load_target(&options)?;
     let (secrets, _) = RemoteControlIdentityDirectory::new(options.state_dir.join("identity"))
         .load_or_generate()?
@@ -582,21 +990,23 @@ async fn control(options: Options) -> Result<(), Error> {
                     Power::On => RemoteControlInterfacePower::On,
                     Power::Off => RemoteControlInterfacePower::Off,
                 };
+                let id = resolve_interface(&connection, id).await?;
                 let (outcome, _) = connection
-                    .set_interface_power(*id, power)
+                    .set_interface_power(id, power)
                     .await
                     .map_err(Error::Operation)?;
                 println!(
                     "{}",
-                    json!({"event":"interface_power","outcome":format!("{outcome:?}")})
+                    json!({"event":"interface_power","interface":hex::encode(id.as_bytes()),"outcome":format!("{outcome:?}")})
                 );
             }
             Command::Peers { id } => {
+                let id = resolve_interface(&connection, id).await?;
                 let mut page = RemoteControlPeerPage::First;
                 let mut completion = Err(Error::Pagination);
                 for _ in 0..256 {
                     let (outcome, _) = connection
-                        .inventory_interface_peers(*id, page)
+                        .inventory_interface_peers(id, page)
                         .await
                         .map_err(Error::Operation)?;
                     let RemoteControlInterfacePeersOutcome::Page(peers) = outcome else {
@@ -659,6 +1069,47 @@ async fn control(options: Options) -> Result<(), Error> {
                 );
             }
             Command::BoardKey | Command::OwnerKey => {}
+            Command::Flash { .. } => {}
+            Command::Set(change) => {
+                if let Some(name) = new_name {
+                    let (outcome, _) = connection
+                        .set_node_name(name)
+                        .await
+                        .map_err(Error::Operation)?;
+                    println!(
+                        "{}",
+                        json!({"event":"set_name","name":name.as_str(),"outcome":format!("{outcome:?}")})
+                    );
+                }
+                if change.changes_lora() {
+                    let lora_id = lora_interface(&connection).await?;
+                    let current = match connection
+                        .inventory_interface_config(lora_id)
+                        .await
+                        .map_err(Error::Operation)?
+                        .0
+                    {
+                        RemoteControlInterfaceConfigOutcome::Card(card) => {
+                            personal_rns::interfaces::lora::RadioProfile::parse_inventory_config(
+                                card.config.as_str(),
+                            )
+                        }
+                        RemoteControlInterfaceConfigOutcome::UnknownInterface => None,
+                    }
+                    .ok_or_else(|| {
+                        Error::Invalid("could not read the board's current LoRa settings".into())
+                    })?;
+                    let settings = LoraSettings::of(current).with(change)?;
+                    let (outcome, _) = connection
+                        .set_interface_lora_profile(lora_id, settings.profile()?)
+                        .await
+                        .map_err(Error::Operation)?;
+                    println!(
+                        "{}",
+                        json!({"event":"lora","settings":settings.json(),"outcome":format!("{outcome:?}")})
+                    );
+                }
+            }
             Command::Name { .. } => {
                 if let Some(name) = new_name {
                     let (outcome, _) = connection
@@ -682,14 +1133,51 @@ async fn control(options: Options) -> Result<(), Error> {
         Ok(())
     };
     tokio::select! {
-        result = tokio::time::timeout(OPERATION_TIMEOUT, operation) => result.map_err(|_| Error::Timeout(stage.get()))?,
+        result = tokio::time::timeout(OPERATION_TIMEOUT, operation) => result.map_err(|_| timeout_error(stage.get(), &options.device))?,
         result = node.run() => Err(Error::Node(result)),
     }
+}
+
+/// Explain the common reasons a board never answers instead of only naming the stage.
+fn timeout_error(stage: &'static str, device: &str) -> Error {
+    if stage != "finding the board over USB" {
+        return Error::Timeout(stage);
+    }
+    if !hopspot_on_usb() {
+        return Error::NotFound(
+            "no Hopspot is plugged in (or it is still starting); check the USB cable and try again"
+                .into(),
+        );
+    }
+    Error::NotFound(format!(
+        "a Hopspot is plugged in but it is not the board saved as `{device}`. Either another board \
+         is connected (pick it with --device), or this board was set up again elsewhere (for \
+         example from the web page), which gives it a new identity. Add it with the key from \
+         wherever it was set up, or set it up again with `provision --flash`"
+    ))
 }
 
 /// The LoRa interface's ID changes with its profile, so look it up rather than asking for it.
 async fn lora_interface(
     connection: &personal_rns::runtime::RemoteControlTargetHandle<'_>,
+) -> Result<InterfaceId, Error> {
+    find_interface(connection, "LoRa").await
+}
+
+async fn resolve_interface(
+    connection: &personal_rns::runtime::RemoteControlTargetHandle<'_>,
+    interface: &InterfaceRef,
+) -> Result<InterfaceId, Error> {
+    match interface {
+        InterfaceRef::Id(id) => Ok(*id),
+        InterfaceRef::Kind(kind) => find_interface(connection, kind).await,
+    }
+}
+
+/// The first interface whose kind contains `kind` (`LoRa`, `Bluetooth`, `UsbAuto`).
+async fn find_interface(
+    connection: &personal_rns::runtime::RemoteControlTargetHandle<'_>,
+    kind: &str,
 ) -> Result<InterfaceId, Error> {
     let mut page = RemoteControlInterfacePage::First;
     for _ in 0..256 {
@@ -700,7 +1188,7 @@ async fn lora_interface(
         if let Some(entry) = inventory
             .entries()
             .iter()
-            .find(|entry| format!("{:?}", entry.kind).contains("LoRa"))
+            .find(|entry| format!("{:?}", entry.kind).contains(kind))
         {
             return Ok(entry.id);
         }
@@ -711,7 +1199,9 @@ async fn lora_interface(
             }
         }
     }
-    Err(Error::Record("the board reports no LoRa interface".into()))
+    Err(Error::Invalid(format!(
+        "the board reports no {kind} interface"
+    )))
 }
 
 #[tokio::main(flavor = "current_thread")]
