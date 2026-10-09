@@ -5,19 +5,41 @@
 // the board, so afterwards only this browser (and controllers it authorizes) can configure it.
 // Every board operation is a Remote Control request; the wire format lives in Rust (`rc*`).
 
-import {
-  BrowserLocalStorageIdentityStore,
-  Prns,
-  destinationHash,
-  identityHash,
-  requestPathHash,
-} from "./sdk/index.js";
+import { BrowserLocalStorageIdentityStore, Prns, destinationHash, identityHash, requestPathHash } from "./sdk/index.js";
 import initWasm, * as rc from "./pkg/prns_wasm.js";
 
 const IDENTITY_KEY = "prns.hopspot-configure.identity.v1";
 const BOARDS_KEY = "prns.hopspot-configure.boards.v1";
-const FIRMWARE = { rak4631: "./firmware/rak4631.uf2" };
-const RAK4631_VAULT_ADDRESS = 0xe2000;
+// Boards the setup wizard can flash. `ownerPage` is the memory profile's remote-control-identity
+// page, where the setup image writes the board's key and its owner; `drive` is the bootloader
+// drive's name, for the instructions.
+const BOARD_TYPES = {
+  rak4631: {
+    label: "RAK WisBlock 4631",
+    firmware: "./firmware/rak4631.uf2",
+    ownerPage: 0xe2000,
+    drive: "RAK4631",
+    reset: "Double-press its RESET button",
+  },
+  "wio-tracker-l1": {
+    label: "Seeed Wio Tracker L1",
+    firmware: "./firmware/wio-tracker-l1.uf2",
+    ownerPage: 0xe1000,
+    drive: "TRACKER L1",
+    reset: "Double-press its RESET button",
+  },
+  "xiao-nrf52840": {
+    label: "Seeed XIAO nRF52840 with Wio-SX1262",
+    firmware: "./firmware/xiao-nrf52840.uf2",
+    ownerPage: 0xe1000,
+    drive: "XIAO-SENSE",
+    reset: "Double-tap its tiny RESET button",
+  },
+};
+// A running Hopspot restarts into its UF2 bootloader when sent this vendor request (prns-core
+// `BOOTLOADER_ENTRY_CONTROL_*`), so updating a board needs no button presses.
+const HOPSPOT_USB = { vendorId: 0x1209, productId: 0x0001 };
+const BOOTLOADER_ENTRY = { requestType: "vendor", recipient: "device", request: 0x50, value: 0x5052, index: 0x4e53 };
 const UF2_FAMILY_NRF52840 = 0xada52840;
 const REFRESH_MS = 5000;
 
@@ -45,7 +67,11 @@ function h(tag, props = {}, ...children) {
 
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const unhex = (text) => {
-  const clean = text.trim().toLowerCase().replace(/^0x/, "").replace(/[^0-9a-f]/g, "");
+  const clean = text
+    .trim()
+    .toLowerCase()
+    .replace(/^0x/, "")
+    .replace(/[^0-9a-f]/g, "");
   if (clean.length % 2) throw new Error("hex text has an odd number of digits");
   return Uint8Array.from(clean.match(/../g) ?? [], (pair) => parseInt(pair, 16));
 };
@@ -160,6 +186,137 @@ function mergeUf2(firmware, pageAddress, page) {
   return merged;
 }
 
+/// Check a plain firmware UF2 before an update: right chip, and it leaves the owner page alone,
+/// so the board keeps its identity, owner, name and settings.
+function checkFirmware(firmware, ownerPage) {
+  if (firmware.length === 0 || firmware.length % 512) throw new Error("firmware UF2 is malformed");
+  const view = new DataView(firmware.buffer, firmware.byteOffset, firmware.byteLength);
+  for (let offset = 0; offset < firmware.length; offset += 512) {
+    if (view.getUint32(offset + 28, true) !== UF2_FAMILY_NRF52840) throw new Error("not an nRF52840 UF2");
+    const address = view.getUint32(offset + 12, true);
+    if (address + view.getUint32(offset + 16, true) > ownerPage)
+      throw new Error("this firmware would overwrite the board's settings");
+  }
+  return firmware;
+}
+
+async function fetchFirmware(type) {
+  const response = await fetch(BOARD_TYPES[type].firmware, { cache: "no-cache" });
+  if (!response.ok) throw new Error(`Could not download the ${BOARD_TYPES[type].label} firmware (${response.status})`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+/// Restart the plugged-in Hopspot into its update (UF2 bootloader) mode. Returns false when no
+/// running Hopspot was chosen, for example a new board that still runs its factory firmware.
+async function restartIntoUpdateMode() {
+  if (session) {
+    session.close();
+    session = null;
+  }
+  await controller.disconnectUsb();
+  let devices = (await navigator.usb.getDevices()).filter(
+    (device) => device.vendorId === HOPSPOT_USB.vendorId && device.productId === HOPSPOT_USB.productId,
+  );
+  if (devices.length === 0) {
+    try {
+      devices = [await navigator.usb.requestDevice({ filters: [HOPSPOT_USB] })];
+    } catch {
+      return false;
+    }
+  }
+  if (devices.length > 1) throw new Error("More than one Hopspot is plugged in. Unplug all but the one to update.");
+  const [device] = devices;
+  if (!device.opened) await device.open();
+  try {
+    await device.controlTransferOut(BOOTLOADER_ENTRY);
+  } catch {
+    // The board resets while answering, so the transfer may report an error.
+  }
+  try {
+    await device.close();
+  } catch {
+    // Already gone.
+  }
+  return true;
+}
+
+/// The three steps every flash shares: get the board into update mode, write the image to its
+/// drive, wait for it to restart. `image()` builds the bytes when the user clicks Write.
+function flashSteps(type, { image, fileName, writeLabel, onWritten }) {
+  const board = BOARD_TYPES[type];
+  const state = h("p", { class: "muted small" });
+  const write = async (direct) => {
+    const bytes = await image();
+    let written = false;
+    try {
+      if (direct) {
+        state.textContent = `Pick the ${board.drive} drive in the window that opens…`;
+        written = await writeToDrive(bytes, "hopspot.uf2");
+      }
+      if (!written) {
+        download(bytes, fileName);
+        state.textContent = `Downloaded ${fileName}. Drag it onto the ${board.drive} drive, then delete the file.`;
+      } else {
+        state.textContent = "Written. The board restarts by itself; give it a few seconds.";
+      }
+    } catch (error) {
+      if (error.name === "AbortError") {
+        state.textContent = "Cancelled.";
+        return;
+      }
+      throw error;
+    } finally {
+      bytes.fill(0);
+    }
+    onWritten?.(written);
+  };
+  return h(
+    "div",
+    {},
+    h(
+      "ol",
+      { class: "steps" },
+      h("li", {}, `Plug the ${board.label} into this computer with a USB cable.`),
+      h(
+        "li",
+        {},
+        "Put it in update mode: ",
+        h(
+          "button",
+          {
+            onclick: (e) =>
+              busy(e.currentTarget, async () => {
+                state.textContent = "Asking the board to restart…";
+                state.textContent = (await restartIntoUpdateMode())
+                  ? `Restarting. A drive called ${board.drive} appears in a few seconds.`
+                  : `No running Hopspot was picked. ${board.reset}; a drive called ${board.drive} appears.`;
+              }),
+          },
+          "Restart into update mode",
+        ),
+        h(
+          "div",
+          { class: "muted small" },
+          `New board, or the button does nothing? ${board.reset} instead. A drive called ${board.drive} appears.`,
+        ),
+      ),
+      h(
+        "li",
+        {},
+        h("button", { class: "primary", onclick: (e) => busy(e.currentTarget, () => write(true)) }, writeLabel),
+        " ",
+        h("button", { onclick: (e) => busy(e.currentTarget, () => write(false)) }, "Download file instead"),
+        h(
+          "div",
+          { class: "muted small" },
+          `Choose the ${board.drive} drive when asked. Your browser may ask to allow editing it; allow it.`,
+        ),
+      ),
+    ),
+    state,
+  );
+}
+
 async function writeToDrive(bytes, fileName) {
   if (!("showDirectoryPicker" in window)) return false;
   const directory = await window.showDirectoryPicker({ id: "hopspot-uf2", mode: "readwrite" });
@@ -212,7 +369,10 @@ class Controller {
       if (path.tag === "Succeeded") found = path;
       else await sleep(750);
     }
-    if (!found) throw new Error("The board did not answer. Is this the right board, and is it plugged in?");
+    if (!found)
+      throw new Error(
+        "The board did not answer. Check that this board is the one plugged in. If it was set up again somewhere else (another browser, or the usb_config tool), it has a new identity: add it again with its key, or set it up again here.",
+      );
     onStage("Opening a secure link…");
     const link = await this.prns.establishLink(endpoint);
     if (link.tag !== "Succeeded") throw new Error(`Link: ${describe(link)}`);
@@ -311,7 +471,14 @@ function homeScreen() {
       { class: "row" },
       h("button", { onclick: exportBackup }, "Download backup"),
       h("button", { onclick: importBackup }, "Restore backup"),
-      h("button", { onclick: () => navigator.clipboard.writeText(hex(controller.publicKey)).then(() => toast("Public key copied")) }, "Copy public key"),
+      h(
+        "button",
+        {
+          onclick: () =>
+            navigator.clipboard.writeText(hex(controller.publicKey)).then(() => toast("Public key copied")),
+        },
+        "Copy public key",
+      ),
     ),
   );
   const boardCards = list.map((board) =>
@@ -322,13 +489,18 @@ function homeScreen() {
         "div",
         { class: "row spread" },
         h("h2", {}, board.name),
-        h("span", { class: "pill" }, board.board.toUpperCase()),
+        h("span", { class: "pill" }, BOARD_TYPES[board.board]?.label ?? "Hopspot"),
       ),
       h("p", { class: "muted small" }, "Plug the board into this computer with a USB cable, then connect."),
       h(
         "div",
         { class: "row" },
-        h("button", { class: "primary", onclick: (event) => busy(event.currentTarget, () => connectScreen(board)) }, "Connect"),
+        h(
+          "button",
+          { class: "primary", onclick: (event) => busy(event.currentTarget, () => connectScreen(board)) },
+          "Connect",
+        ),
+        h("button", { onclick: () => updateScreen(board) }, "Update firmware"),
         h("button", { onclick: () => renameBoard(board) }, "Rename"),
         h("button", { class: "danger", onclick: () => forgetBoard(board) }, "Forget"),
       ),
@@ -337,100 +509,129 @@ function homeScreen() {
   render(
     ...boardCards,
     setupCard(list.length === 0),
-    h(
-      "details",
-      { class: "card" },
-      h("summary", {}, "Add a board this key already controls"),
-      addExistingForm(),
-    ),
+    h("details", { class: "card" }, h("summary", {}, "Add a board this key already controls"), addExistingForm()),
     ownerCard,
   );
 }
 
 function setupCard(open) {
-  const name = h("input", { value: "My RAK4631", "aria-label": "Board name" });
-  const state = h("p", { class: "muted small" });
+  const type = h(
+    "select",
+    { "aria-label": "Board type" },
+    Object.entries(BOARD_TYPES).map(([value, board]) => h("option", { value }, board.label)),
+  );
+  const name = h("input", { value: "My Hopspot", "aria-label": "Board name" });
+  const region = h(
+    "select",
+    { "aria-label": "Radio region" },
+    h("option", { value: "" }, "Choose later"),
+    rc
+      .rcLoRaRegions()
+      .filter((label) => label !== "Custom")
+      .map((label) =>
+        h(
+          "option",
+          { value: label },
+          rc.rcRegionAutoProfile(label) ? label : `${label} (pick the frequency after setup)`,
+        ),
+      ),
+  );
+  const steps = h("div", {});
+  const drawSteps = () =>
+    steps.replaceChildren(
+      flashSteps(type.value, {
+        fileName: `${type.value}-hopspot-setup.uf2`,
+        writeLabel: `Set up the ${BOARD_TYPES[type.value].drive} drive`,
+        image: () => provisionImage(type.value, name.value, region.value),
+        onWritten: (written) => setTimeout(homeScreen, written ? 2500 : 8000),
+      }),
+    );
+  type.addEventListener("change", drawSteps);
+  drawSteps();
   const body = h(
     "div",
     { class: "card" },
-    h("h2", {}, "Set up a new RAK4631"),
-    h(
-      "ol",
-      { class: "steps" },
-      h("li", {}, "Plug the RAK4631 into this computer with a USB cable."),
-      h("li", {}, "Double-press its RESET button. A drive called RAK4631 appears."),
-      h("li", {}, "Click “Write to RAK4631” and pick that drive. The board restarts by itself."),
-      h("li", {}, "Come back here and click Connect."),
-    ),
-    h("label", { class: "field" }, "Board name (announced to other apps after the first connect)", name),
+    h("h2", {}, "Set up a new board"),
     h(
       "div",
-      { class: "row" },
-      h(
-        "button",
-        {
-          class: "primary",
-          onclick: (event) => busy(event.currentTarget, () => provision(name.value, state, true)),
-        },
-        "Write to RAK4631",
-      ),
-      h(
-        "button",
-        { onclick: (event) => busy(event.currentTarget, () => provision(name.value, state, false)) },
-        "Download file instead",
-      ),
+      { class: "fields" },
+      h("label", { class: "field" }, "Board", type),
+      h("label", { class: "field" }, "Name (shown to other apps)", name),
+      h("label", { class: "field" }, "Radio region (where you are)", region),
     ),
-    state,
+    steps,
     h(
       "p",
       { class: "muted small" },
-      "This erases what is on the board and installs Personal Hopspot with this browser as its owner.",
+      "Setup erases what is on the board and installs Personal Hopspot with this browser as its owner. After that, change settings here at any time without setting it up again.",
     ),
   );
-  return open ? body : h("details", { class: "card" }, h("summary", {}, "Set up a new RAK4631"), body);
+  return open ? body : h("details", { class: "card" }, h("summary", {}, "Set up a new board"), body);
 }
 
-async function provision(name, state, direct) {
-  state.textContent = "Preparing firmware…";
-  const response = await fetch(FIRMWARE.rak4631, { cache: "no-cache" });
-  if (!response.ok) throw new Error(`Could not download firmware (${response.status})`);
-  const firmware = new Uint8Array(await response.arrayBuffer());
+/// Build the setup image: the firmware plus a fresh board key that trusts this browser, and
+/// remember the board so Connect can find it.
+async function provisionImage(type, name, region) {
+  const firmware = await fetchFirmware(type);
   const targetSecret = crypto.getRandomValues(new Uint8Array(64));
   const targetPublicKey = rc.rcIdentityPublicKey(targetSecret);
   const page = rc.rcVaultPage(targetSecret, controller.publicKey);
   targetSecret.fill(0);
-  const merged = mergeUf2(firmware, RAK4631_VAULT_ADDRESS, page);
+  const merged = mergeUf2(firmware, BOARD_TYPES[type].ownerPage, page);
   page.fill(0);
-  let written = false;
-  if (direct) {
-    state.textContent = "Pick the RAK4631 drive in the window that opens…";
-    try {
-      written = await writeToDrive(merged, "hopspot.uf2");
-    } catch (error) {
-      if (error.name === "AbortError") {
-        state.textContent = "Cancelled.";
-        merged.fill(0);
-        return;
-      }
-      throw error;
-    }
-  }
-  if (!written) {
-    download(merged, "rak4631-hopspot.uf2");
-    state.textContent =
-      "Downloaded rak4631-hopspot.uf2. Drag it onto the RAK4631 drive, then delete the file (it holds the board's private key).";
-  } else {
-    state.textContent = "Written. The board is restarting; give it a few seconds, then click Connect.";
-  }
-  merged.fill(0);
+  const label = name.trim() || "My Hopspot";
   boards.add({
-    name: name.trim() || "My RAK4631",
-    board: "rak4631",
+    name: label,
+    board: type,
     targetPublicKey: hex(targetPublicKey),
     addedAt: new Date().toISOString(),
-    pendingName: name.trim() || undefined,
+    pendingName: label,
+    pendingRegion: region || undefined,
   });
-  setTimeout(homeScreen, written ? 2500 : 6000);
+  return merged;
+}
+
+function updateScreen(board) {
+  const type = h(
+    "select",
+    { "aria-label": "Board type" },
+    Object.entries(BOARD_TYPES).map(([value, info]) =>
+      h("option", { value, selected: value === board.board }, info.label),
+    ),
+  );
+  const steps = h("div", {});
+  const drawSteps = () =>
+    steps.replaceChildren(
+      flashSteps(type.value, {
+        fileName: `${type.value}-hopspot-update.uf2`,
+        writeLabel: "Write the update",
+        image: async () => checkFirmware(await fetchFirmware(type.value), BOARD_TYPES[type.value].ownerPage),
+        onWritten: () => {
+          if (!BOARD_TYPES[board.board]) boards.add({ ...board, board: type.value });
+        },
+      }),
+    );
+  type.addEventListener("change", drawSteps);
+  drawSteps();
+  render(
+    h(
+      "section",
+      { class: "card" },
+      h(
+        "div",
+        { class: "row spread" },
+        h("h2", {}, `Update ${board.name}`),
+        h("button", { onclick: () => homeScreen() }, "Back"),
+      ),
+      h(
+        "p",
+        { class: "muted small" },
+        "Installs the newest firmware. The board keeps its name, owner, radio settings and everything it learned.",
+      ),
+      !BOARD_TYPES[board.board] && h("label", { class: "field" }, "Board type", type),
+      steps,
+    ),
+  );
 }
 
 function addExistingForm() {
@@ -444,7 +645,12 @@ function addExistingForm() {
       { class: "muted small" },
       "For a board set up elsewhere (for example with the usb_config tool) that has authorized this browser's public key. Paste the board's public key.",
     ),
-    h("div", { class: "fields" }, h("label", { class: "field" }, "Name", name), h("label", { class: "field" }, "Board public key", key)),
+    h(
+      "div",
+      { class: "fields" },
+      h("label", { class: "field" }, "Name", name),
+      h("label", { class: "field" }, "Board public key", key),
+    ),
     h(
       "div",
       { class: "row" },
@@ -455,7 +661,12 @@ function addExistingForm() {
             try {
               const bytes = unhex(key.value);
               rc.rcTargetEndpoint(bytes);
-              boards.add({ name: name.value.trim() || "My Hopspot", board: "hopspot", targetPublicKey: hex(bytes), addedAt: new Date().toISOString() });
+              boards.add({
+                name: name.value.trim() || "My Hopspot",
+                board: "hopspot",
+                targetPublicKey: hex(bytes),
+                addedAt: new Date().toISOString(),
+              });
               homeScreen();
             } catch (error) {
               toast(error.message ?? String(error), "bad");
@@ -496,7 +707,8 @@ function importBackup() {
   input.addEventListener("change", async () => {
     try {
       const backup = JSON.parse(await input.files[0].text());
-      if (backup.format !== "prns-hopspot-configure-backup/1" || !backup.identity) throw new Error("Not a Hopspot Configure backup");
+      if (backup.format !== "prns-hopspot-configure-backup/1" || !backup.identity)
+        throw new Error("Not a Hopspot Configure backup");
       fromBase64(backup.identity);
       if (!confirm("Replace this browser's owner key with the backup? The page will reload.")) return;
       localStorage.setItem(IDENTITY_KEY, backup.identity);
@@ -538,7 +750,33 @@ async function dashboard(board) {
       toast(error.message ?? String(error), "bad");
     }
   }
-  const view = { board, can, openPeers: new Set(), editing: new Set() };
+  const opening = { editing: new Set(), region: null };
+  // The setup wizard's region becomes the LoRa profile on the first connect.
+  if (board.pendingRegion && can.has("SetInterfaceLoRaProfile") && can.has("InventoryInterfaces")) {
+    try {
+      const lora = (await session.interfaces()).find((entry) => entry.interfaceKind === "LoRa");
+      const auto = rc.rcRegionAutoProfile(board.pendingRegion);
+      if (lora && !auto) {
+        opening.editing.add(`lora:${lora.id}`);
+        opening.region = board.pendingRegion;
+        toast(
+          `${board.pendingRegion} has no default radio settings: choose its frequency in the LoRa settings below`,
+          "bad",
+        );
+      } else if (lora && auto) {
+        const text = `LoRa,${board.pendingRegion},${auto.frequencyHz},${auto.spreadingFactor},${auto.bandwidthKhz},${auto.codingRate},${auto.txPowerDbm},${auto.preamble}`;
+        expectApplied(
+          await session.call(rc.rcRequestSetInterfaceLoRaProfile(unhex(lora.id), text)),
+          `Radio region ${board.pendingRegion}`,
+        );
+      }
+      board = { ...board, pendingRegion: undefined };
+      boards.add(board);
+    } catch (error) {
+      toast(error.message ?? String(error), "bad");
+    }
+  }
+  const view = { board, can, openPeers: new Set(), editing: opening.editing, suggestedRegion: opening.region };
   await drawDashboard(view);
   refreshTimer = setInterval(() => {
     if (view.editing.size === 0 && !document.hidden) void drawDashboard(view).catch(() => {});
@@ -570,7 +808,12 @@ async function drawDashboard(view) {
         "div",
         { class: "row spread" },
         h("h2", {}, nodeName?.name ?? board.name),
-        h("button", { onclick: () => disconnect() }, "Disconnect"),
+        h(
+          "div",
+          { class: "row" },
+          h("button", { onclick: () => disconnect().then(() => updateScreen(board)) }, "Update firmware"),
+          h("button", { onclick: () => disconnect() }, "Disconnect"),
+        ),
       ),
       can.has("SetNodeName") && nameEditor(view, nodeName?.name ?? board.name),
       h(
@@ -584,7 +827,13 @@ async function drawDashboard(view) {
             h("span", {}, "Battery"),
             h("strong", {}, power.battery === null ? "—" : `${power.battery}%`),
           ),
-        power && h("div", { class: "stat" }, h("span", {}, "External power"), h("strong", {}, power.externalPower.replace(/\{.*\}/, "").trim())),
+        power &&
+          h(
+            "div",
+            { class: "stat" },
+            h("span", {}, "External power"),
+            h("strong", {}, power.externalPower.replace(/\{.*\}/, "").trim()),
+          ),
         h("div", { class: "stat" }, h("span", {}, "Interfaces"), h("strong", {}, String(interfaces.length))),
       ),
       systemControls(can),
@@ -632,17 +881,38 @@ function systemControls(can) {
   const buttons = [];
   if (can.has("AnnounceSelf"))
     buttons.push(
-      h("button", { class: "primary", onclick: (e) => busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestAnnounceSelf()), "Announce")) }, "Announce now"),
+      h(
+        "button",
+        {
+          class: "primary",
+          onclick: (e) =>
+            busy(e.currentTarget, async () =>
+              expectApplied(await session.call(rc.rcRequestAnnounceSelf()), "Announce"),
+            ),
+        },
+        "Announce now",
+      ),
     );
   if (can.has("SetSystemPower")) {
     buttons.push(
-      h("button", { onclick: (e) => busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestSetSystemPower(true)), "Wake")) }, "Wake"),
+      h(
+        "button",
+        {
+          onclick: (e) =>
+            busy(e.currentTarget, async () =>
+              expectApplied(await session.call(rc.rcRequestSetSystemPower(true)), "Wake"),
+            ),
+        },
+        "Wake",
+      ),
       h(
         "button",
         {
           onclick: (e) => {
             if (!confirm("Put the board to sleep? All its radios stop until you wake it.")) return;
-            void busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestSetSystemPower(false)), "Sleep"));
+            void busy(e.currentTarget, async () =>
+              expectApplied(await session.call(rc.rcRequestSetSystemPower(false)), "Sleep"),
+            );
           },
         },
         "Sleep",
@@ -650,9 +920,31 @@ function systemControls(can) {
     );
   }
   if (can.has("SleepRadios"))
-    buttons.push(h("button", { onclick: (e) => busy(e.currentTarget, async () => toast(`Radios: ${(await session.call(rc.rcRequestSleepRadios())).outcome}`)) }, "Sleep radios"));
+    buttons.push(
+      h(
+        "button",
+        {
+          onclick: (e) =>
+            busy(e.currentTarget, async () =>
+              toast(`Radios: ${(await session.call(rc.rcRequestSleepRadios())).outcome}`),
+            ),
+        },
+        "Sleep radios",
+      ),
+    );
   if (can.has("WakeRadios"))
-    buttons.push(h("button", { onclick: (e) => busy(e.currentTarget, async () => toast(`Radios: ${(await session.call(rc.rcRequestWakeRadios())).outcome}`)) }, "Wake radios"));
+    buttons.push(
+      h(
+        "button",
+        {
+          onclick: (e) =>
+            busy(e.currentTarget, async () =>
+              toast(`Radios: ${(await session.call(rc.rcRequestWakeRadios())).outcome}`),
+            ),
+        },
+        "Wake radios",
+      ),
+    );
   return buttons.length ? h("div", { class: "row" }, buttons) : null;
 }
 
@@ -667,8 +959,26 @@ function deviceControls(can) {
         h(
           "div",
           { class: "row" },
-          h("button", { onclick: (e) => busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestSetGnssPower(true)), "GPS on")) }, "On"),
-          h("button", { onclick: (e) => busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestSetGnssPower(false)), "GPS off")) }, "Off"),
+          h(
+            "button",
+            {
+              onclick: (e) =>
+                busy(e.currentTarget, async () =>
+                  expectApplied(await session.call(rc.rcRequestSetGnssPower(true)), "GPS on"),
+                ),
+            },
+            "On",
+          ),
+          h(
+            "button",
+            {
+              onclick: (e) =>
+                busy(e.currentTarget, async () =>
+                  expectApplied(await session.call(rc.rcRequestSetGnssPower(false)), "GPS off"),
+                ),
+            },
+            "Off",
+          ),
         ),
       ),
     );
@@ -681,8 +991,26 @@ function deviceControls(can) {
         h(
           "div",
           { class: "row" },
-          h("button", { onclick: (e) => busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestSetDisplayVisibility(true)), "Screen on")) }, "On"),
-          h("button", { onclick: (e) => busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestSetDisplayVisibility(false)), "Screen off")) }, "Off"),
+          h(
+            "button",
+            {
+              onclick: (e) =>
+                busy(e.currentTarget, async () =>
+                  expectApplied(await session.call(rc.rcRequestSetDisplayVisibility(true)), "Screen on"),
+                ),
+            },
+            "On",
+          ),
+          h(
+            "button",
+            {
+              onclick: (e) =>
+                busy(e.currentTarget, async () =>
+                  expectApplied(await session.call(rc.rcRequestSetDisplayVisibility(false)), "Screen off"),
+                ),
+            },
+            "Off",
+          ),
         ),
       ),
     );
@@ -695,8 +1023,26 @@ function deviceControls(can) {
         h(
           "div",
           { class: "row" },
-          h("button", { onclick: (e) => busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestSetDisplayAutoOff(true)), "Auto-off")) }, "Enable"),
-          h("button", { onclick: (e) => busy(e.currentTarget, async () => expectApplied(await session.call(rc.rcRequestSetDisplayAutoOff(false)), "Auto-off")) }, "Disable"),
+          h(
+            "button",
+            {
+              onclick: (e) =>
+                busy(e.currentTarget, async () =>
+                  expectApplied(await session.call(rc.rcRequestSetDisplayAutoOff(true)), "Auto-off"),
+                ),
+            },
+            "Enable",
+          ),
+          h(
+            "button",
+            {
+              onclick: (e) =>
+                busy(e.currentTarget, async () =>
+                  expectApplied(await session.call(rc.rcRequestSetDisplayAutoOff(false)), "Auto-off"),
+                ),
+            },
+            "Disable",
+          ),
         ),
       ),
     );
@@ -723,7 +1069,9 @@ function connectionState(connection, enabled) {
 
 async function interfaceCard(view, entry) {
   const { can } = view;
-  const config = can.has("InventoryInterfaceConfig") ? await session.call(rc.rcRequestInventoryInterfaceConfig(unhex(entry.id))) : null;
+  const config = can.has("InventoryInterfaceConfig")
+    ? await session.call(rc.rcRequestInventoryInterfaceConfig(unhex(entry.id)))
+    : null;
   const [stateText, stateKind] = connectionState(entry.connection, entry.enabled);
   const card = h(
     "section",
@@ -741,7 +1089,8 @@ async function interfaceCard(view, entry) {
       h("div", { class: "stat" }, h("span", {}, "Sent"), h("strong", {}, bytesText(entry.txBytes))),
       h("div", { class: "stat" }, h("span", {}, "Received"), h("strong", {}, bytesText(entry.rxBytes))),
       h("div", { class: "stat" }, h("span", {}, "Links"), h("strong", {}, String(entry.links))),
-      config?.status === "Card" && h("div", { class: "stat" }, h("span", {}, "Known destinations"), h("strong", {}, String(config.destinations))),
+      config?.status === "Card" &&
+        h("div", { class: "stat" }, h("span", {}, "Known destinations"), h("strong", {}, String(config.destinations))),
       config?.group && h("div", { class: "stat" }, h("span", {}, "Group"), h("strong", {}, config.group)),
     ),
     config?.failure && h("p", { class: "small", style: "color: var(--bad)" }, config.failure),
@@ -754,23 +1103,43 @@ async function interfaceCard(view, entry) {
         {
           onclick: (e) => {
             const turningOff = entry.enabled;
-            if (turningOff && entry.interfaceKind === "UsbAutoDevice" && !confirm("Turning USB off disconnects this page from the board. Continue?")) return;
+            if (
+              turningOff &&
+              entry.interfaceKind === "UsbAutoDevice" &&
+              !confirm(
+                "Turning USB off disconnects this page from the board. To get USB back, unplug the board and plug it in again (it restarts with everything on). Continue?",
+              )
+            )
+              return;
             void busy(e.currentTarget, async () => {
-              expectApplied(await session.call(rc.rcRequestSetInterfacePower(unhex(entry.id), !turningOff)), `${kindLabel(entry.interfaceKind)} ${turningOff ? "off" : "on"}`);
+              expectApplied(
+                await session.call(rc.rcRequestSetInterfacePower(unhex(entry.id), !turningOff)),
+                `${kindLabel(entry.interfaceKind)} ${turningOff ? "off" : "on"}`,
+              );
               await drawDashboard(view);
             });
           },
         },
-        entry.enabled ? "Turn off" : "Turn on",
+        `${entry.enabled ? "Turn off" : "Turn on"} ${kindLabel(entry.interfaceKind)}`,
+      ),
+      h(
+        "span",
+        { class: "muted small" },
+        entry.enabled
+          ? "Stays off until you turn it on or the board restarts."
+          : "Turned off; the board turns it back on when it restarts.",
       ),
     );
   }
   if (actions.childElementCount) card.append(actions);
 
   const loraProfile = config?.config ? rc.rcParseLoRaConfig(config.config) : null;
-  if (entry.interfaceKind === "LoRa" && can.has("SetInterfaceLoRaProfile")) card.append(loraEditor(view, entry, loraProfile));
-  if (can.has("InventoryInterfaceDiscoveryGroups") && entry.interfaceKind === "BluetoothAuto") card.append(await groupsEditor(view, entry));
-  if (can.has("SetInterfaceGroup") && entry.interfaceKind !== "UsbAutoDevice") card.append(groupEditor(view, entry, config));
+  if (entry.interfaceKind === "LoRa" && can.has("SetInterfaceLoRaProfile"))
+    card.append(loraEditor(view, entry, loraProfile));
+  if (can.has("InventoryInterfaceDiscoveryGroups") && entry.interfaceKind === "BluetoothAuto")
+    card.append(await groupsEditor(view, entry));
+  if (can.has("SetInterfaceGroup") && entry.interfaceKind !== "UsbAutoDevice")
+    card.append(groupEditor(view, entry, config));
   if (can.has("SetInterfaceMode")) card.append(modeEditor(view, entry));
   if (can.has("InventoryInterfacePeers")) card.append(await peersSection(view, entry));
   return card;
@@ -788,20 +1157,47 @@ function editingDetails(view, key, summary, ...body) {
 function loraEditor(view, entry, current) {
   const regions = rc.rcLoRaRegions();
   const presets = rc.rcLoRaPresets();
-  const region = h("select", {}, regions.map((label) => h("option", { value: label, selected: label === current?.region }, label)));
+  const wanted = view.suggestedRegion ?? current?.region;
+  const region = h(
+    "select",
+    {},
+    regions.map((label) => h("option", { value: label, selected: label === wanted }, label)),
+  );
   const preset = h(
     "select",
     {},
     presets.map((p) =>
-      h("option", { value: p.label, selected: p.label === current?.preset }, `${p.label.replace(/([a-z])([A-Z])/g, "$1 $2")} (SF${p.spreadingFactor}, ${p.bandwidthKhz} kHz)`),
+      h(
+        "option",
+        { value: p.label, selected: p.label === current?.preset },
+        `${p.label.replace(/([a-z])([A-Z])/g, "$1 $2")} (SF${p.spreadingFactor}, ${p.bandwidthKhz} kHz)`,
+      ),
     ),
     h("option", { value: "custom", selected: current && !current.preset }, "Custom"),
   );
-  const frequency = h("input", { type: "number", step: "0.001", value: current ? (current.frequencyHz / 1e6).toFixed(3) : "" });
+  const frequency = h("input", {
+    type: "number",
+    step: "0.001",
+    value: current ? (current.frequencyHz / 1e6).toFixed(3) : "",
+  });
   const power = h("input", { type: "number", min: "-9", max: "30", value: current?.txPowerDbm ?? 14 });
-  const sf = h("select", {}, [5, 6, 7, 8, 9, 10, 11, 12].map((n) => h("option", { value: n, selected: n === (current?.spreadingFactor ?? 10) }, `SF${n}`)));
-  const bw = h("select", {}, [125, 250, 500].map((n) => h("option", { value: n, selected: n === (current?.bandwidthKhz ?? 250) }, `${n} kHz`)));
-  const cr = h("select", {}, [5, 6, 7, 8].map((n) => h("option", { value: n, selected: n === (current?.codingRate ?? 5) }, `4/${n}`)));
+  const sf = h(
+    "select",
+    {},
+    [5, 6, 7, 8, 9, 10, 11, 12].map((n) =>
+      h("option", { value: n, selected: n === (current?.spreadingFactor ?? 10) }, `SF${n}`),
+    ),
+  );
+  const bw = h(
+    "select",
+    {},
+    [125, 250, 500].map((n) => h("option", { value: n, selected: n === (current?.bandwidthKhz ?? 250) }, `${n} kHz`)),
+  );
+  const cr = h(
+    "select",
+    {},
+    [5, 6, 7, 8].map((n) => h("option", { value: n, selected: n === (current?.codingRate ?? 5) }, `4/${n}`)),
+  );
   const preamble = h("input", { type: "number", min: "6", max: "65535", value: current?.preamble ?? 18 });
 
   const syncPreset = () => {
@@ -867,7 +1263,10 @@ function loraEditor(view, entry, current) {
               const hz = Math.round(parseFloat(frequency.value) * 1e6);
               if (!Number.isFinite(hz) || hz <= 0) throw new Error("Enter a frequency in MHz");
               const text = `LoRa,${region.value},${hz},${sf.value},${bw.value},${cr.value},${parseInt(power.value, 10)},${parseInt(preamble.value, 10)}`;
-              expectApplied(await session.call(rc.rcRequestSetInterfaceLoRaProfile(unhex(entry.id), text)), "LoRa settings");
+              expectApplied(
+                await session.call(rc.rcRequestSetInterfaceLoRaProfile(unhex(entry.id), text)),
+                "LoRa settings",
+              );
               view.editing.delete(`lora:${entry.id}`);
               await drawDashboard(view);
             }),
@@ -886,7 +1285,22 @@ async function groupsEditor(view, entry) {
   const drawChips = () =>
     chips.replaceChildren(
       ...groups.map((group, index) =>
-        h("span", { class: "chip" }, group, h("button", { "aria-label": `Remove ${group}`, onclick: () => { groups.splice(index, 1); drawChips(); } }, "×")),
+        h(
+          "span",
+          { class: "chip" },
+          group,
+          h(
+            "button",
+            {
+              "aria-label": `Remove ${group}`,
+              onclick: () => {
+                groups.splice(index, 1);
+                drawChips();
+              },
+            },
+            "×",
+          ),
+        ),
       ),
     );
   drawChips();
@@ -897,7 +1311,24 @@ async function groupsEditor(view, entry) {
     `Bluetooth discovery groups · ${result.groups.join(", ") || "none"}`,
     h("p", { class: "muted small" }, "Boards only pair over Bluetooth with others that share a discovery group."),
     chips,
-    h("div", { class: "row" }, input, h("button", { onclick: () => { if (input.value.trim()) { groups.push(input.value.trim()); input.value = ""; drawChips(); } } }, "Add")),
+    h(
+      "div",
+      { class: "row" },
+      input,
+      h(
+        "button",
+        {
+          onclick: () => {
+            if (input.value.trim()) {
+              groups.push(input.value.trim());
+              input.value = "";
+              drawChips();
+            }
+          },
+        },
+        "Add",
+      ),
+    ),
     h(
       "div",
       { class: "row" },
@@ -907,7 +1338,10 @@ async function groupsEditor(view, entry) {
           class: "primary",
           onclick: (e) =>
             busy(e.currentTarget, async () => {
-              expectApplied(await session.call(rc.rcRequestReplaceInterfaceDiscoveryGroups(unhex(entry.id), groups)), "Discovery groups");
+              expectApplied(
+                await session.call(rc.rcRequestReplaceInterfaceDiscoveryGroups(unhex(entry.id), groups)),
+                "Discovery groups",
+              );
               view.editing.delete(`groups:${entry.id}`);
               await drawDashboard(view);
             }),
@@ -924,39 +1358,56 @@ function groupEditor(view, entry, config) {
     view,
     `group:${entry.id}`,
     `Interface group · ${config?.group || "default"}`,
-    h("div", { class: "row" }, input, h(
-      "button",
-      {
-        onclick: (e) =>
-          busy(e.currentTarget, async () => {
-            expectApplied(await session.call(rc.rcRequestSetInterfaceGroup(unhex(entry.id), input.value.trim())), "Group");
-            view.editing.delete(`group:${entry.id}`);
-            await drawDashboard(view);
-          }),
-      },
-      "Save",
-    )),
+    h(
+      "div",
+      { class: "row" },
+      input,
+      h(
+        "button",
+        {
+          onclick: (e) =>
+            busy(e.currentTarget, async () => {
+              expectApplied(
+                await session.call(rc.rcRequestSetInterfaceGroup(unhex(entry.id), input.value.trim())),
+                "Group",
+              );
+              view.editing.delete(`group:${entry.id}`);
+              await drawDashboard(view);
+            }),
+        },
+        "Save",
+      ),
+    ),
   );
 }
 
 function modeEditor(view, entry) {
-  const select = h("select", {}, rc.rcInterfaceModes().map((mode) => h("option", { value: mode, selected: mode === entry.mode }, mode)));
+  const select = h(
+    "select",
+    {},
+    rc.rcInterfaceModes().map((mode) => h("option", { value: mode, selected: mode === entry.mode }, mode)),
+  );
   return editingDetails(
     view,
     `mode:${entry.id}`,
     `Interface mode · ${entry.mode}`,
-    h("div", { class: "row" }, select, h(
-      "button",
-      {
-        onclick: (e) =>
-          busy(e.currentTarget, async () => {
-            expectApplied(await session.call(rc.rcRequestSetInterfaceMode(unhex(entry.id), select.value)), "Mode");
-            view.editing.delete(`mode:${entry.id}`);
-            await drawDashboard(view);
-          }),
-      },
-      "Save",
-    )),
+    h(
+      "div",
+      { class: "row" },
+      select,
+      h(
+        "button",
+        {
+          onclick: (e) =>
+            busy(e.currentTarget, async () => {
+              expectApplied(await session.call(rc.rcRequestSetInterfaceMode(unhex(entry.id), select.value)), "Mode");
+              view.editing.delete(`mode:${entry.id}`);
+              await drawDashboard(view);
+            }),
+        },
+        "Save",
+      ),
+    ),
   );
 }
 
@@ -986,7 +1437,19 @@ async function peersTable(entry) {
     h(
       "table",
       {},
-      h("thead", {}, h("tr", {}, h("th", {}, "Peer"), h("th", {}, "State"), h("th", {}, "Sent"), h("th", {}, "Received"), h("th", {}, "Signal"))),
+      h(
+        "thead",
+        {},
+        h(
+          "tr",
+          {},
+          h("th", {}, "Peer"),
+          h("th", {}, "State"),
+          h("th", {}, "Sent"),
+          h("th", {}, "Received"),
+          h("th", {}, "Signal"),
+        ),
+      ),
       h(
         "tbody",
         {},
@@ -1041,7 +1504,10 @@ async function controllersCard(view) {
                         onclick: (e) => {
                           if (!confirm("Remove this controller's access?")) return;
                           void busy(e.currentTarget, async () => {
-                            expectApplied(await session.call(rc.rcRequestRevokeController(unhex(hash))), "Access removed");
+                            expectApplied(
+                              await session.call(rc.rcRequestRevokeController(unhex(hash))),
+                              "Access removed",
+                            );
                             await drawDashboard(view);
                           });
                         },
@@ -1060,20 +1526,32 @@ async function controllersCard(view) {
         view,
         "authorize",
         "Give another browser or app access",
-        h("p", { class: "muted small" }, "On the other device, open this page and copy its public key from “This browser's owner key”."),
-        h("div", { class: "row" }, key, h(
-          "button",
-          {
-            class: "primary",
-            onclick: (e) =>
-              busy(e.currentTarget, async () => {
-                expectApplied(await session.call(rc.rcRequestAuthorizeController(unhex(key.value))), "Access granted");
-                view.editing.delete("authorize");
-                await drawDashboard(view);
-              }),
-          },
-          "Grant access",
-        )),
+        h(
+          "p",
+          { class: "muted small" },
+          "On the other device, open this page and copy its public key from “This browser's owner key”.",
+        ),
+        h(
+          "div",
+          { class: "row" },
+          key,
+          h(
+            "button",
+            {
+              class: "primary",
+              onclick: (e) =>
+                busy(e.currentTarget, async () => {
+                  expectApplied(
+                    await session.call(rc.rcRequestAuthorizeController(unhex(key.value))),
+                    "Access granted",
+                  );
+                  view.editing.delete("authorize");
+                  await drawDashboard(view);
+                }),
+            },
+            "Grant access",
+          ),
+        ),
       ),
   );
 }
@@ -1094,7 +1572,14 @@ async function start() {
   if (!("usb" in navigator)) {
     runtimeBadge.textContent = "Unsupported browser";
     runtimeBadge.dataset.state = "bad";
-    render(h("section", { class: "card" }, h("h2", {}, "This browser can't talk to USB devices"), h("p", {}, "Open this page in Chrome or Edge on a computer.")));
+    render(
+      h(
+        "section",
+        { class: "card" },
+        h("h2", {}, "This browser can't talk to USB devices"),
+        h("p", {}, "Open this page in Chrome or Edge on a computer."),
+      ),
+    );
     return;
   }
   const wasmUrl = new URL("./pkg/prns_wasm.js", location.href);
@@ -1129,5 +1614,12 @@ async function start() {
 start().catch((error) => {
   runtimeBadge.textContent = "Error";
   runtimeBadge.dataset.state = "bad";
-  render(h("section", { class: "card" }, h("h2", {}, "Something went wrong"), h("p", { class: "mono" }, error.message ?? String(error))));
+  render(
+    h(
+      "section",
+      { class: "card" },
+      h("h2", {}, "Something went wrong"),
+      h("p", { class: "mono" }, error.message ?? String(error)),
+    ),
+  );
 });
